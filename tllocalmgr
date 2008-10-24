@@ -2,7 +2,7 @@
 
 use warnings;
 use strict;
-use lib "tlpkg"; #FIXME
+use lib "/usr/share/texmf-var/arch/tlpkg"; 
 use TeXLive::TLPDB;
 use TeXLive::TLPOBJ;
 our $VERSION = "0.2";
@@ -40,7 +40,8 @@ my $CTANBASEURL="http://mirror.ctan.org/systems/texlive/tlnet/2008";
 my $ROOT = "$ENV{HOME}/.texlive/texmf-var/arch";
 my $LOCALDB = "$ROOT/tlpkg/texlive.tlpdb";
 my $LOCALDBLZMA = "$LOCALDB.lzma";
-my $INSTALLEDPKGS = "$ROOT/installedpkgs";
+#my $INSTALLEDPKGS = "$ROOT/installedpkgs";
+my $INSTALLEDPKGS = "/usr/share/texmf-var/arch/installedpkgs";
 my $logfile = "$ROOT/tllocalmgr.log";
 
 my $skipupdate = $opts->{'skipupdate'} || 0 ;
@@ -190,7 +191,9 @@ my %locallyinstalleddoc_versions; # version of each locally installed doc pkg
 
 chomp(my @pacman = `pacman -Qs ^texlive- | egrep ^local | cut -d'/' -f2`);
 my @localpacman = grep { /^texlive-local-/ } @pacman;
-my @collpacman = grep { !/^texlive-local-/ } @pacman; 
+# To have the standard collections we get rid of 
+# texlive-local-<pkg> and texlive-localmanager:
+my @collpacman = grep { !/^texlive-local/ } @pacman; 
 
 if (@localpacman) {
 	foreach (@localpacman) {
@@ -306,10 +309,14 @@ no strict 'refs';
 if (@ARGV) {
 	my $cmd = shift @ARGV;
 	my $runcmd = "run_$cmd";
-	eval { &$runcmd(@ARGV) };
-	die "Error: command $cmd is not defined\n" if $@;
-	# &$runcmd(@ARGV);
-	exit 0 unless $cmd eq 'status';
+	if ($cmd =~ /^(help|usage)/ ) {
+		print usage(); 
+	} 
+	else {
+		eval { &$runcmd(@ARGV) };
+		die "Error: command $cmd is not defined\n" if $@;
+		exit 0 unless $cmd eq 'status';
+	}
 }
 
 print "Welcome to the TeXLive Local Manager shell. Type 'help' for assistance.\n";
