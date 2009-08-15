@@ -1,11 +1,12 @@
 #!/usr/bin/perl
-
+use 5.010;
 use warnings;
 use strict;
-use lib "/usr/share/texmf-var/arch/tlpkg"; 
-use TeXLive::TLPDB;
-use TeXLive::TLPOBJ;
-our $VERSION = "0.2";
+use lib 'tlpkg';
+#use lib "/usr/share/texmf-var/arch/tlpkg"; 
+use TeXLive::Arch;
+our $VERSION = "0.3.0";
+our $YEAR = "2009";
 
 use Getopt::Long; 
 my $opts = {};
@@ -35,12 +36,12 @@ die version(), "\n" if $opts->{'version'};
 my $term = new Term::ShellUI( commands => get_commands());
 $term->prompt( "tllocalmgr> " );
 
-#my $TEXMFVAR=`kpsewhich -var-value=TEXMFVAR`;
-my $CTANBASEURL="http://mirror.ctan.org/systems/texlive/tlnet/2008";
+#my $CTANBASEURL="http://mirror.ctan.org/systems/texlive/tlnet/$YEAR";
+my $CTANBASEURL="ftp://tug.org/texlive/tlnet"; # <<<< TEMPORARY
+
 my $ROOT = "$ENV{HOME}/.texlive/texmf-var/arch";
 my $LOCALDB = "$ROOT/tlpkg/texlive.tlpdb";
-my $LOCALDBLZMA = "$LOCALDB.lzma";
-#my $INSTALLEDPKGS = "$ROOT/installedpkgs";
+my $LOCALDBXZ = "$LOCALDB.xz";
 my $INSTALLEDPKGS = "/usr/share/texmf-var/arch/installedpkgs";
 my $logfile = "$ROOT/tllocalmgr.log";
 
@@ -51,24 +52,14 @@ my $mirror = $opts->{'mirror'} || $CTANBASEURL ;
 my $localsearch = $opts->{'localsearch'} || 0 ;
 
 my $TLARCHIVE="$mirror/archive";
-my $TLPDB="$mirror/tlpkg/texlive.tlpdb.lzma";
+my $TLPDB="$mirror/tlpkg/texlive.tlpdb.xz";
 
-my @core_colls = qw/ basic basicbin binextra context fontbin genericrecommended fontsrecommended langczechslovak langfrench langgerman langitalian langpolish langportuguese langspanish latex latexrecommended mathextra metapost psutils texinfo xetex / ;
-
-my @core_doc_colls = qw/ documentation-base documentation-bulgarian documentation-chinese 
-		documentation-czechslovak documentation-dutch documentation-english documentation-finnish
-		documentation-french documentation-german documentation-greek documentation-italian
-		documentation-japanese documentation-korean documentation-mongolian documentation-polish
-		documentation-portuguese documentation-russian documentation-slovenian documentation-spanish
-		documentation-thai documentation-turkish documentation-ukrainian documentation-vietnamese /;
-
-my @other_colls = qw/ bibtexextra fontsextra formatsextra games genericextra htmlxml humanities langcjk langcyrillic langgreek latex3 latexextra music pictures plainextra pstricks publishers science /;
-my @langextra_colls = qw/ langafrican langarab langarmenian langcroatian langhebrew langindic langmongolian langtibetan langvietnamese /;
-
-#my @collections = qw/ core /;
-#push @collections, (@other_colls, @langextra_colls);
 
 ########### INITIALIZATION ###########
+
+unless ( -d $ROOT ) {
+	system("mkdir -p $ROOT")
+}
 
 open LOG, ">> $logfile";
 my $initlog = 0;
@@ -88,80 +79,21 @@ unless ($skipupdate) {
 		print "Retrieving new TeXLive database from CTAN...\n";
 		initlog() unless $initlog;
 		print LOG "* Retrieving new TeXLive database from CTAN...\n\t$TLPDB";
-		getstore($TLPDB,$LOCALDBLZMA) || die "could not fetch $TLPDB : $!";
+		getstore($TLPDB,$LOCALDBXZ) || die "could not fetch $TLPDB : $!";
 		system("mv $ROOT/tlpkg/texlive.tlpdb $ROOT/tlpkg/texlive.tlpdb.old");
-		system("unlzma $ROOT/tlpkg/texlive.tlpdb.lzma");
+		system("unxz $ROOT/tlpkg/texlive.tlpdb.xz");
 	}
 };
 
 print GREEN, BOLD, "Initializing ...", RESET, "\n" ;
-my $tlpdb = new TeXLive::TLPDB (root => $ROOT) || die "cannot read $ROOT/tlpkg/texlive.tlpdb";
 
-my %tlpackages;
-my %tldocpackages;
+### read DB
 
-my @core_additional = qw/ pgf ruhyphen ukrhyph /;
-push @{$tlpackages{'core'}}, @core_additional;
-push @{$tlpackages{'core-doc'}}, 'pgf';
+my $tlpdb = new TeXLive::Arch (root => $ROOT) || die "cannot read $ROOT/tlpkg/texlive.tlpdb";
 
-foreach my $coll (@core_colls) {
-		foreach my $d ($tlpdb->get_package("collection-$coll")->depends) {
-			# avoid packages without content in texmf-dist:
-			next if $d =~ /^(a2ping|hyphenex|luatex|pdftex|synctex|texlive\.infra|xindy)$/;
-			# avoid also bin- collection- and hyphen- packages
-			push @{$tlpackages{'core'}}, $d unless $d =~ /^(bin|collection|hyphen)-/;
-			if (($tlpdb->get_package($d)->doccontainermd5 or $tlpdb->get_package($d)->docsize) 
-					and $d !~ /^(bin|collection|hyphen)-/) {
-				push @{$tlpackages{'core-doc'}}, $d ;
-			}
-		}
-} 
+my %tlpackages = $tlpdb->archpackages;
 
-foreach my $coll (@core_doc_colls) {
-		foreach my $d ($tlpdb->get_package("collection-$coll")->depends) {
-			push @{$tlpackages{'core-doc'}}, $d unless $d =~ /^(bin|collection|hyphen)-/;
-		}
-} 
-
-foreach my $d ($tlpdb->get_package("collection-fontsextra")->depends) {
-	next if $d =~ /^(aleph|ocherokee|oinuit)$/;
-	push @{$tlpackages{'fontsextra'}}, $d unless $d =~ /^(bin|collection|hyphen)-/;
-	if (($tlpdb->get_package($d)->doccontainermd5 or $tlpdb->get_package($d)->docsize) 
-			and $d !~ /^(bin|collection|hyphen)-/) {
-		push @{$tlpackages{'fontsextra-doc'}}, $d ;
-	}
-}
-
-foreach my $coll (@other_colls) {
-	next if $coll eq 'fontsextra';
-	foreach my $d ($tlpdb->get_package("collection-$coll")->depends) {
-		next if ($coll =~ /^pictures/ and $d eq 'pgf');
-		next if ($coll =~ /^langcyrillic/ and ($d eq 'ruhyphen' or $d eq 'ukrhyph'));
-		push @{$tlpackages{$coll}}, $d unless $d =~ /^(bin|collection|hyphen)-/;
-		if (($tlpdb->get_package($d)->doccontainermd5 or $tlpdb->get_package($d)->docsize) 
-				and $d !~ /^(bin|collection|hyphen)-/) {
-			push @{$tlpackages{"$coll-doc"}}, $d ;
-		}
-	}
-} 
-
-foreach my $coll (@langextra_colls) {
-	foreach my $d ($tlpdb->get_package("collection-$coll")->depends) {
-		next if $d =~ /^(omega-devanagari|otibet)$/;
-		push @{$tlpackages{'langextra'}}, $d unless ($d eq 'ebong' or $d =~ /^(bin|collection|hyphen)-/);
-		if (($tlpdb->get_package($d)->doccontainermd5 or $tlpdb->get_package($d)->docsize) 
-				and $d !~ /^(bin|collection|hyphen)-/) {
-			push @{$tlpackages{"langextra-doc"}}, $d ;
-		}
-	}
-} 
-
-# add swebib and finbib to bibtexextra
-my @bibtexadd = qw /swebib finbib/;
-push @{$tlpackages{'bibtexextra'}}, @bibtexadd;
-push @{$tlpackages{'bibtexextra-doc'}}, 'swebib';
-
-my %versions ;
+my %versions = $tlpdb->archversions;
 
 # list of all packages in the database that interest us
 # i.e. less than $tlpdb->list_packages !
@@ -171,7 +103,8 @@ my %seen = ();
 foreach my $coll (keys %tlpackages) {
 	my @tmp;
 	foreach my $pkg (@{$tlpackages{$coll}}) {
-		push @tmp, $tlpdb->package_revision($pkg);
+        my $tlpkg = $tlpdb->get_package($pkg);
+		push @tmp, $tlpkg->revision;
 		unless (exists $seen{$pkg}) {
 			push @allpackages, $pkg
 		};
@@ -219,7 +152,7 @@ if (@collpacman) {
 		next if $col eq 'texlive-bin';
 		$col =~ s/^texlive-//;
 		my $ver = $tmp[1];
-		$ver =~ s/2008\.([0-9]+)-[0-9]+$/$1/;
+		$ver =~ s/[0-9]{4}\.([0-9]+)-[0-9]+$/$1/;
 		#print "debug: $col - $ver\n";
 		$installedcol_versions{$col} = $ver;
 		my @list = ();
@@ -279,10 +212,11 @@ my @updatedpkgs; # pkgs for which updates are available
 
 foreach my $col (sort keys %installedcol_versions) {
 	#my $installedver = `pacman -Q texlive-$col`;
-	#$installedver =~ s/texlive-$col 2008\.([0-9]+)-.+/$1/;
+	#$installedver =~ s/texlive-$col $YEAR\.([0-9]+)-.+/$1/;
 	next unless ( $installedcol_versions{$col} < $versions{$col} ) ;
 	foreach my $pkg (sort @{$tlpackages{$col}}) {
-		my $newver = $tlpdb->package_revision($pkg);
+        my $tlpkg = $tlpdb->get_package($pkg);
+		my $newver = $tlpkg->revision;
 		if ( exists $installedpkg_versions{$pkg} ) {
 			my $oldver = $installedpkg_versions{$pkg} ;
 			if ($newver > $oldver) {
@@ -395,7 +329,6 @@ sub warning {
 	print RED @_, "\n"
 }
 
-
 sub run_clean {
 	print "Are you sure? (y/N) > ";
 	chomp(my $choice = <STDIN>) ;
@@ -432,7 +365,8 @@ sub run_status {
 		my $count = 0;
 		foreach my $pkg (sort @locpkgs) {
 			my $localver = $locallyinstalledpkg_versions{$pkg};
-			my $newver = $tlpdb->package_revision($pkg) || "0";
+            my $tlpkg = $tlpdb->get_package($pkg);
+            my $newver = $tlpkg->revision || "0";
 			print LOG "Warning: revision of $pkg is problematic\n" if $newver eq '0';
 			if ( $newver > $localver ) {
 				$count++;
@@ -449,7 +383,8 @@ sub run_status {
 		my $count = 0;
 		foreach my $pkg (sort @locdocs) {
 			my $localver = $locallyinstalleddoc_versions{$pkg};
-			my $newver = $tlpdb->package_revision($pkg) || "0";
+            my $tlpkg = $tlpdb->get_package($pkg);
+            my $newver = $tlpkg->revision || "0";
 			print LOG "Warning: revision of $pkg is problematic\n" if $newver eq '0';
 			if ( $newver > $localver ) {
 				$count++;
@@ -463,9 +398,11 @@ sub run_status {
 
 sub run_install {
 	foreach (@_) {
+        my $tlpkg  = $tlpdb->get_package($_);
+        my $pkgrev = $tlpkg->revision;
 		if ( $locallyinstalledpkg_versions{$_} ) {
 			echo "$_ is already installed with texlive-local-$_";
-			if ($locallyinstalledpkg_versions{$_} == $tlpdb->package_revision($_)) {
+			if ($locallyinstalledpkg_versions{$_} == $pkgrev) {
 				echo "and it is uptodate"
 			} else {
 				print "Do you want to update it locally? (Y/n) > " ;
@@ -476,7 +413,7 @@ sub run_install {
 		}
 		elsif ( $installedpkg_versions{$_} ) {
 			echo "$_ is already installed with texlive-$collectionsbypkg{$_}";
-			if ($installedpkg_versions{$_} == $tlpdb->package_revision($_)) {
+			if ($installedpkg_versions{$_} == $pkgrev) {
 				echo "and it is uptodate"
 			} else { 
 				#TODO check if it was already locally installed
@@ -485,7 +422,7 @@ sub run_install {
 				next if $choice =~ m/^n/i;
 				makepkg($_);
 			}
-		} elsif (! $tlpdb->package_revision($_)) {
+		} elsif (! $pkgrev) {
 			warning "$_ is unknown" ;
 			next ;
 		} else {
@@ -497,9 +434,11 @@ sub run_install {
 
 sub run_installdoc {
 	foreach (@_) {
+        my $tlpkg  = $tlpdb->get_package($_);
+        my $pkgrev = $tlpkg->revision;
 		if ( $locallyinstalleddoc_versions{$_} ) {
 			echo "$_ is already installed with texlive-local-$_-doc";
-			if ($locallyinstalleddoc_versions{$_} == $tlpdb->package_revision($_)) {
+			if ($locallyinstalleddoc_versions{$_} == $pkgrev) {
 				echo "and it is uptodate"
 			} else {
 				print "Do you want to update it locally? (Y/n) > " ;
@@ -508,7 +447,7 @@ sub run_installdoc {
 				makepkgdoc($_);
 			}
 		}
-		elsif (! $tlpdb->package_revision($_)) {
+		elsif (! $pkgrev) {
 			warning "$_ is unknown" ;
 			next ;
 		} 
@@ -524,9 +463,11 @@ sub run_installsrc {
 
 sub run_update {
 	foreach (@_) {
+        my $tlpkg  = $tlpdb->get_package($_);
+        my $pkgrev = $tlpkg->revision;
 		if ( $locallyinstalledpkg_versions{$_} ) {
 			echo "$_ is already installed with texlive-local-$_";
-			if ($locallyinstalledpkg_versions{$_} == $tlpdb->package_revision($_)) {
+			if ($locallyinstalledpkg_versions{$_} == $pkgrev) {
 				echo "and it is uptodate"
 			} else {
 				print "Do you want to update it locally? (Y/n) > " ;
@@ -537,7 +478,7 @@ sub run_update {
 		}
 		elsif ( $installedpkg_versions{$_} ) {
 			echo "$_ is already installed with texlive-$collectionsbypkg{$_}";
-			if ($installedpkg_versions{$_} == $tlpdb->package_revision($_)) {
+			if ($installedpkg_versions{$_} == $pkgrev) {
 				echo "and it is uptodate"
 			} else { 
 				print "Do you want to update it locally? (Y/n) > " ;
@@ -545,7 +486,7 @@ sub run_update {
 				next if $choice =~ m/^n/i;
 				makepkg($_);
 			}
-		} elsif (! $tlpdb->package_revision($_)) {
+		} elsif (! $pkgrev) {
 			warning "$_ is unknown" ;
 			next ;
 		} else {
@@ -654,16 +595,17 @@ sub makepkg {
 	print LOG "\t", join(", ", @stack), "\n\n";
 
 	foreach my $pkg (@stack) {
-		if ( ! defined $tlpdb->package_revision($pkg) ) {
+        my $tlpkg  = $tlpdb->get_package($pkg);
+		if ( ! defined $tlpkg ) {
 			print RED "Warning: $pkg does not exist\n";
 			print LOG "Warning: $pkg does not exist\n";
 			next;
 		};
 		mkpath( "$ROOT/builds/$pkg", { mode => 0755 });
 		open PKGBUILD, "> $ROOT/builds/$pkg/PKGBUILD";
-		my $newver = $tlpdb->package_revision($pkg);
+        my $newver = $tlpkg->revision;
 		my $col = $collectionsbypkg{$pkg};
-		my $pkgmd5 = $tlpdb->get_package($pkg)->containermd5;
+		my $pkgmd5 = $tlpkg->containermd5;
 		#TODO download it first and compare the md5sum
 		#     if it differs ask the user if the PKGBUILD 
 		#     should be adjusted
@@ -674,21 +616,33 @@ pkgver=$newver
 pkgrel=1
 pkgdesc="TeX Live - local installation of CTAN package $pkg"
 license=('GPL')
-arch=('i686' 'x86_64')
+arch=('any')
 depends=('texlive-core')
-conflicts=('texlive-$col>=2008.$newver')
-makedepends=('lzma-utils')
+conflicts=('texlive-$col>=$YEAR.$newver')
 url='http://tug.org/texlive/'
-source=('$TLARCHIVE/$pkg.tar.lzma')
+source=('$TLARCHIVE/$pkg.tar.xz')
 md5sums=($pkgmd5)
 
 build() {
-   cd \$startdir/src
-   lzma --force -dc $pkg.tar.lzma | tar xf - || return 1
-   install -m755 -d \$startdir/pkg/usr/local/share || return 1
-   cd texmf-dist
-   find . -type d -exec install -d -m755 \$startdir/pkg/usr/local/share/texmf/'{}' \\; || exit 1
-   find . -type f -exec install -m644 '{}' \$startdir/pkg/usr/local/share/texmf/'{}' \\; || exit 1
+   cd \$srcdir
+   rm -rf tlpkg
+   install -m775 -d \$pkgdir/usr/local/share/texmf || return 1
+   wanteddirs=\$(for d in *; do test -d \$d && [[ \$d != texmf* ]] && echo \$d; done)
+   for dir in \$wanteddirs; do
+     find \$dir -type d -exec install -d -m775 \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
+     find \$dir -type f -exec install -m664 '{}' \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
+   done
+   for dir in texmf-dist texmf-doc; do
+      if [[ -d \$dir ]]; then
+        cd \$dir
+        find . -type d -exec install -d -m775 \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
+        find . -type f -exec install -m664 '{}' \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
+        cd ..
+      fi
+   done
+   if [[ -d \$pkgdir/usr/local/share/texmf/scripts ]]; then
+     find \$pkgdir/usr/local/share/texmf/scripts -type f -exec chmod a+x '{}' \\;
+   fi
 }
 EOF
 	;
@@ -699,7 +653,7 @@ EOF
 	#	close INSTALL;
 		print LOG "* Running makepkg -ci on $ROOT/builds/$pkg/PKGBUILD\n";
 		chdir "$ROOT/builds/$pkg";
-		system( "test -f $pkg.tar.lzma && rm $pkg.tar.lzma" );
+		system( "test -f $pkg.tar.xz && rm $pkg.tar.xz" );
 		# TODO : catch error if makepkg fails
 		system( "makepkg -ci" );
 	}
@@ -755,38 +709,43 @@ pkgver=$newver
 pkgrel=1
 pkgdesc="TeX Live - local installation of CTAN package $pkg (documentation and sources)"
 license=('GPL')
-arch=('i686' 'x86_64')
+arch=('any')
 depends=('texlive-core')
-makedepends=('lzma-utils')
 url='http://tug.org/texlive/'
 EOF
 		;
 		if ($srcpkgmd5) { 
 			print PKGBUILD <<"EOF"
-source=('$TLARCHIVE/$pkg.doc.tar.lzma' '$TLARCHIVE/$pkg.source.tar.lzma')
+source=('$TLARCHIVE/$pkg.doc.tar.xz' '$TLARCHIVE/$pkg.source.tar.xz')
 md5sums=('$docpkgmd5' '$srcpkgmd5')
-build() {
-   cd \$startdir/src
-   lzma --force -dc $pkg.doc.tar.lzma | tar xf - || return 1
-   lzma --force -dc $pkg.source.tar.lzma | tar xf - || return 1
 EOF
 		} else {
 		print PKGBUILD <<"EOF"
-source=('$TLARCHIVE/$pkg.doc.tar.lzma')
+source=('$TLARCHIVE/$pkg.doc.tar.xz')
 md5sums=('$docpkgmd5')
-build() {
-   cd \$startdir/src
-   lzma --force -dc $pkg.doc.tar.lzma | tar xf - || return 1
 EOF
-		; print PKGBUILD <<"EOF"
-   install -m755 -d \$startdir/pkg/usr/local/share || return 1
-   for d in texmf-dist texmf-doc; do
-   	   if [ -d \$d ]; then
-		 cd \$d
-   		 find . -type d -exec install -d -m755 \$startdir/pkg/usr/local/share/texmf/'{}' \\; || exit 1
-		 find . -type f -exec install -m644 '{}' \$startdir/pkg/usr/local/share/texmf/'{}' \\; || exit 1
-       fi
-	done
+        };
+		print PKGBUILD <<"EOF"
+build() {
+   cd \$srcdir
+   rm -rf tlpkg
+   install -m775 -d \$pkgdir/usr/local/share/texmf || return 1
+   wanteddirs=\$(for d in *; do test -d \$d && [[ \$d != texmf* ]] && echo \$d; done)
+   for dir in \$wanteddirs; do
+     find \$dir -type d -exec install -d -m775 \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
+     find \$dir -type f -exec install -m664 '{}' \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
+   done
+   for dir in texmf-dist texmf-doc; do
+      if [[ -d \$dir ]]; then
+        cd \$dir
+        find . -type d -exec install -d -m775 \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
+        find . -type f -exec install -m664 '{}' \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
+        cd ..
+      fi
+   done
+   if [[ -d \$pkgdir/usr/local/share/texmf/scripts ]]; then
+     find \$pkgdir/usr/local/share/texmf/scripts -type f -exec chmod a+x '{}' \\;
+   fi
 }
 EOF
 	;
@@ -797,11 +756,11 @@ EOF
 	#	close INSTALL;
 		print LOG "* Running makepkg -ci on $ROOT/builds/$pkg-doc/PKGBUILD\n";
 		chdir "$ROOT/builds/$pkg-doc";
-		system( "test -f $pkg-*.tar.lzma && rm $pkg-*.tar.lzma" );
+		system( "test -f $pkg-*.tar.xz && rm $pkg-*.tar.xz" );
 		# TODO : catch error if makepkg fails
 		system( "makepkg -ci" );
 		}
-	}
+	
 
 	print "\n>>> Finished. Don't forget to run 'texhash' to update your file database.\n";
 	#system ( "sed -i '/^$pkg /d' $INSTALLEDPKGS/texlive-local-doc.pkgs" );
