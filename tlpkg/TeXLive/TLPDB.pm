@@ -1,4 +1,4 @@
-# $Id: TLPDB.pm 14083 2009-07-03 15:27:37Z preining $
+# $Id: TLPDB.pm 14553 2009-08-06 13:20:26Z preining $
 # TeXLive::TLPDB.pm - module for using tlpdb files
 # Copyright 2007, 2008 Norbert Preining
 #
@@ -6,6 +6,17 @@
 # or any later version.
 
 package TeXLive::TLPDB;
+
+my $svnrev = '$Revision: 14553 $';
+my $_modulerevision;
+if ($svnrev =~ m/: ([0-9]+) /) {
+  $_modulerevision = $1;
+} else {
+  $_modulerevision = "unknown";
+}
+sub module_revision {
+  return $_modulerevision;
+}
 
 =pod
 
@@ -51,6 +62,8 @@ C<TeXLive::TLPDB> -- A database of TeX Live Packages
   $tlpdb->config_revision;
   $tlpdb->options;
   $tlpdb->option($key, [$value]);
+  $tlpdb->reset_options();
+  $tlpdb->add_default_options();
   $tlpdb->settings;
   $tlpdb->setting($key, [$value]);
   $tlpdb->sizes_of_packages($opt_src, $opt_doc [, @packs ]);
@@ -64,7 +77,7 @@ C<TeXLive::TLPDB> -- A database of TeX Live Packages
 
 use TeXLive::TLConfig qw($CategoriesRegexp $DefaultCategory $InfraLocation
       $DatabaseName $MetaCategoriesRegexp $Archive
-      %TLPDBOptionType %TLPDBSettingType);
+      %TLPDBOptions %TLPDBSettings);
 use TeXLive::TLUtils qw(dirname mkdirhier member win32 info debug ddebug
                         tlwarn);
 use TeXLive::TLPOBJ;
@@ -719,7 +732,7 @@ sub _generate_listfile {
     # first we add all the packages tlps that are directly included
     @incpkg = @lop;
     # now we select all collections, and for all collections we
-    # again select all packages of type Documentation and Package
+    # again select all non-meta-packages
     foreach my $c (@lot) {
       my $coll = $self->get_package($c);
       foreach my $d ($coll->depends) {
@@ -828,8 +841,8 @@ sub config_src_container {
   my $self = shift;
   if (defined($self->{'tlps'}{'00texlive.config'})) {
     foreach my $d ($self->{'tlps'}{'00texlive.config'}->depends) {
-      if ($d eq "container_split_src_files") {
-        return 1;
+      if ($d =~ m!^container_split_src_files/(.*)$!) {
+        return "$1";
       }
     }
   }
@@ -849,8 +862,8 @@ sub config_doc_container {
   my $self = shift;
   if (defined($self->{'tlps'}{'00texlive.config'})) {
     foreach my $d ($self->{'tlps'}{'00texlive.config'}->depends) {
-      if ($d eq "container_split_doc_files") {
-        return 1;
+      if ($d =~ m!^container_split_doc_files/(.*)$!) {
+        return "$1";
       }
     }
   }
@@ -1084,7 +1097,7 @@ sub setting_pkg {
   my $pkg = shift;
   my $key = shift;
   if (@_) { 
-    if ($TLPDBSettingType{$key} eq "l") {
+    if ($TLPDBSettings{$key}->[0] eq "l") {
       $self->_set_value_pkg($pkg, "setting_", $key, "@_"); 
     } else {
       $self->_set_value_pkg($pkg, "setting_", $key, shift); 
@@ -1092,7 +1105,7 @@ sub setting_pkg {
   }
   my $ret = $self->_value_pkg($pkg, "setting_", $key);
   # check the types of the settings, and if it is a "l" return a list
-  if ($TLPDBSettingType{$key} eq "l") {
+  if ($TLPDBSettings{$key}->[0] eq "l") {
     my @ret;
     if (defined $ret) {
       @ret = split(" ", $ret);
@@ -1108,7 +1121,7 @@ sub setting {
   my $self = shift;
   my $key = shift;
   if (@_) { 
-    if ($TLPDBSettingType{$key} eq "l") {
+    if ($TLPDBSettings{$key}->[0] eq "l") {
       $self->_set_setting_value($key, "@_"); 
     } else {
       $self->_set_setting_value($key, shift); 
@@ -1116,7 +1129,7 @@ sub setting {
   }
   my $ret = $self->_setting_value($key);
   # check the types of the settings, and if it is a "l" return a list
-  if ($TLPDBSettingType{$key} eq "l") {
+  if ($TLPDBSettings{$key}->[0] eq "l") {
     my @ret;
     if (defined $ret) {
       @ret = split(" ", $ret);
@@ -1127,6 +1140,23 @@ sub setting {
     return @ret;
   }
   return $ret;
+}
+
+sub reset_options {
+  my $self = shift;
+  for my $k (keys %TeXLive::TLConfig::TLPDBOptions) {
+    $self->option($k, $TeXLive::TLConfig::TLPDBOptions{$k}->[1]);
+  }
+}
+
+sub add_default_options {
+  my $self = shift;
+  for my $k (keys %TeXLive::TLConfig::TLPDBOptions) {
+    # if the option is not set already, do set it to defaults
+    if (! $self->option($k) ) {
+      $self->option($k, $TeXLive::TLConfig::TLPDBOptions{$k}->[1]);
+    }
+  }
 }
 
 =pod
@@ -1158,11 +1188,11 @@ sub _keyshash {
 
 sub options {
   my $self = shift;
-  return ($self->_keyshash('opt_', \%TLPDBOptionType));
+  return ($self->_keyshash('opt_', \%TLPDBOptions));
 }
 sub settings {
   my $self = shift;
-  return ($self->_keyshash('setting_', \%TLPDBSettingType));
+  return ($self->_keyshash('setting_', \%TLPDBSettings));
 }
 
 =pod
