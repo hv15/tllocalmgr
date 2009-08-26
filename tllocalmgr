@@ -24,7 +24,7 @@ use File::Path;
 use LWP::Simple;
 #use YAML::Syck; ##for debugging
 use Term::ANSIColor qw(:constants);
-$Term::ANSIColor::AUTORESET = 1; # 
+$Term::ANSIColor::AUTORESET = 1; 
 use Term::ShellUI;
 
 die "You can't run this program as root\n" if $ENV{'USER'} eq "root";
@@ -69,17 +69,28 @@ sub initlog {
 	$initlog = 1;
 }
 
-my @dbstats = stat($LOCALDB); # to know how old the local db is
+my @dbstats;
+my $ageofdb;
+if (-f $LOCALDB) {
+    @dbstats = stat($LOCALDB);# to know how old the local db is
+} else {
+    $forceupdate = 1
+}
 
 # only retrieve if local DB is older than 12 hours
 unless ($skipupdate) {
-	my $ageofdb = time - $dbstats[9];
+    unless ($forceupdate) {
+    	$ageofdb = time - $dbstats[9] ;
+    }
 	if ($forceupdate || $ageofdb > 3600*12) {
 		print "Retrieving new TeXLive database from CTAN...\n";
 		initlog() unless $initlog;
 		print LOG "* Retrieving new TeXLive database from CTAN...\n\t$TLPDB";
-		getstore($TLPDB,$LOCALDBXZ) || die "could not fetch $TLPDB : $!";
-		system("mv $ROOT/tlpkg/texlive.tlpdb $ROOT/tlpkg/texlive.tlpdb.old");
+		if (is_error( my $rc = getstore($TLPDB,$LOCALDBXZ) ) ) {
+            die "could not fetch $TLPDB : $rc";
+        };
+        
+		system("test -f $ROOT/tlpkg/texlive.tlpdb && mv $ROOT/tlpkg/texlive.tlpdb $ROOT/tlpkg/texlive.tlpdb.old");
 		system("unxz $ROOT/tlpkg/texlive.tlpdb.xz");
 	}
 };

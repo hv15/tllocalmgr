@@ -1,0 +1,5 @@
+#!/bin/bash
+source PKGBUILD || exit 1
+cd ..
+tar czf $pkgname-$pkgver.tar.gz $pkgname/{tllocalmgr,tlpkg}
+mv $pkgname-$pkgver.tar.gz $pkgname/
