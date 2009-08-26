@@ -36,7 +36,7 @@ my @fontutils_with_texmfdist = qw/ accfonts dvipsconfig fontinst fontools /;
 
 # packages to remove from texlive-core (they are either in texlive-bin 
 # or are not needed in Arch Linux):
-my @core_remove = qw( tex texworks vlna luatex pdftex texlive.infra ) ;
+my @core_remove = qw( dvipdfm dvipdfmx dvips gsftopk kpathsea latex luatex pdftex tetex tex texconfig texlive.infra texlive-scripts texworks vlna xdvi ) ;
 
 # collections that are specific to texlive-core-doc:
 my @core_doc_colls =
