@@ -4,7 +4,7 @@ use warnings;
 use strict;
 use lib ('tlpkg', '/usr/share/texmf-var/arch/tlpkg');
 use TeXLive::Arch;
-our $VERSION = "0.3.0";
+our $VERSION = "0.3.2";
 our $YEAR = "2009";
 
 use Getopt::Long; 
@@ -57,7 +57,7 @@ my $TLPDB="$mirror/tlpkg/texlive.tlpdb.xz";
 ########### INITIALIZATION ###########
 
 unless ( -d $ROOT ) {
-	system("mkdir -p $ROOT")
+	system("mkdir -p $ROOT/tlpkg")
 }
 
 open LOG, ">> $logfile";
