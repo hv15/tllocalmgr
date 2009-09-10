@@ -1,7 +1,7 @@
 # Maintainer: françois <firmicus ατ gmx δοτ net> 
 
 pkgname=texlive-localmanager
-pkgver=0.3.1
+pkgver=0.3.2
 pkgrel=1
 pkgdesc="A shell and command-line utility to manage TeXLive on Arch Linux"
 arch=('any')
