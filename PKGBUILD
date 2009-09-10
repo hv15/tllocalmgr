@@ -1,15 +1,15 @@
 # Maintainer: françois <firmicus ατ gmx δοτ net> 
 
 pkgname=texlive-localmanager
-pkgver=0.3.0
+pkgver=0.3.1
 pkgrel=1
 pkgdesc="A shell and command-line utility to manage TeXLive on Arch Linux"
 arch=('any')
 url="http://wiki.archlinux.org/index.php?title=TeXLive#TeXLive_Local_Manager"
 license=('GPL')
-depends=('texlive-core>=2009' 'perl-libwww' 'perl-term-shellui' 'xz-utils')
+depends=('texlive-core>=2009' 'perl-libwww' 'perl-term-shellui' 'xz-utils' 'perl-list-moreutils')
 source=("http://dev.archlinux.org/~francois/$pkgname-$pkgver.tar.gz")
-md5sums=('50c59baca612d579ca5faa39749bb248')
+md5sums=('154e5943167be4e271bc606fdf85182e')
 
 build() {
   cd $srcdir/$pkgname
