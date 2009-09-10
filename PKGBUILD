@@ -9,7 +9,7 @@ url="http://wiki.archlinux.org/index.php?title=TeXLive#TeXLive_Local_Manager"
 license=('GPL')
 depends=('texlive-core>=2009' 'perl-libwww' 'perl-term-shellui' 'xz-utils' 'perl-list-moreutils')
 source=("http://dev.archlinux.org/~francois/$pkgname-$pkgver.tar.gz")
-md5sums=('154e5943167be4e271bc606fdf85182e')
+md5sums=('f20e74366cd01cf4d33bee073fa00ec8')
 
 build() {
   cd $srcdir/$pkgname
