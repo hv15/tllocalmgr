@@ -43,7 +43,7 @@ my @core_doc_colls =
   qw/documentation-base documentation-arabic documentation-bulgarian
   documentation-chinese documentation-czechslovak documentation-dutch
   documentation-english documentation-finnish documentation-french
-  documentation-german documentation-greek documentation-italian
+  documentation-german documentation-italian
   documentation-japanese documentation-korean documentation-mongolian
   documentation-polish documentation-portuguese documentation-russian
   documentation-slovenian documentation-spanish documentation-thai
