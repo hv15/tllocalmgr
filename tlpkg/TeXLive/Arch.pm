@@ -26,7 +26,7 @@ push @core_colls, qw/ langhungarian langlithuanian /;
 # collection-binextra and collection-fontutils are mostly in texlive-bin
 # but there are exceptions:
 my @binextra_with_texmfdist = qw/ 
-    bibtex8 dviasm cweb fragmaster latex2man latexmk mkind-english mkjobtexmf
+    bibtex8 dviasm cweb epstopdf fragmaster latex2man latexmk mkind-english mkjobtexmf
     pdfcrop pkfix pkfix-helper purifyeps texcount texdirflatten texloganalyser
     /;
 
