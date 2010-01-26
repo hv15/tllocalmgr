@@ -1,4 +1,5 @@
 package TeXLive::Arch;
+use 5.010;
 use base 'TeXLive::TLPDB';
 use strict;
 use warnings;
@@ -26,7 +27,7 @@ push @core_colls, qw/ langhungarian langlithuanian /;
 # collection-binextra and collection-fontutils are mostly in texlive-bin
 # but there are exceptions:
 my @binextra_with_texmfdist = qw/ 
-    bibtex8 dviasm cweb epstopdf fragmaster latex2man latexmk mkind-english mkjobtexmf
+    bibtex8 dviasm cweb epstopdf fragmaster latex2man latexmk mkjobtexmf
     pdfcrop pkfix pkfix-helper purifyeps texcount texdirflatten texloganalyser
     /;
 
@@ -186,7 +187,8 @@ sub archversions {
     foreach my $coll ( keys %tlpackages ) {
         my @tmp;
         foreach my $pkg ( @{ $tlpackages{$coll} } ) {
-            my $tlpkg = $self->get_package($pkg);
+            my $tlpkg = $self->get_package($pkg) or croak "Can't get package $pkg: $!";
+            #say "Looking for revision nr of package $pkg for $coll";
             push @tmp, $tlpkg->revision;
         }
         @tmp = sort { $a <=> $b } @tmp;
