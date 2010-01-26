@@ -351,12 +351,13 @@ sub run_status {
 	foreach my $col (sort keys %updatedcol_pkgs) {
 		print LOG " - texlive-$col :\n";
 		print BOLD RED "texlive-$col :\n";
+    my $colver = $installedcol_versions{$col};
 		foreach my $pkg (sort @{$updatedcol_pkgs{$col}}) {
 			next if $locallyinstalledpkg_versions{$pkg};
 			my $newver = $tlpdb->package_revision($pkg);
 			if ( $installedpkg_versions{$pkg} ) {
 				my $oldver = $installedpkg_versions{$pkg} ;
-				if ($newver > $oldver) {
+				if ($newver > $oldver && $newver > $colver) {
 					print GREEN, "\t$pkg", RESET, " has been updated ($oldver => $newver)\n";
 					print LOG "\t$pkg has been updated ($oldver => $newver)\n";
 				}
