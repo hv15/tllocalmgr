@@ -34,7 +34,7 @@ die version(), "\n" if $opts->{'version'};
 my $term = new Term::ShellUI( commands => get_commands());
 $term->prompt( "tllocalmgr> " );
 
-my $CTANBASEURL="http://mirror.ctan.org/systems/texlive/tlnet/$YEAR";
+my $CTANBASEURL="http://mirror.ctan.org/systems/texlive/tlnet";
 #my $CTANBASEURL="ftp://tug.org/texlive/tlnet"; # <<<< TEMPORARY
 
 my $ROOT = "$ENV{HOME}/.texlive/texmf-var/arch";

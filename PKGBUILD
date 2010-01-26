@@ -7,7 +7,7 @@ pkgdesc="A shell and command-line utility to manage TeXLive on Arch Linux"
 arch=('any')
 url="http://wiki.archlinux.org/index.php?title=TeXLive#TeXLive_Local_Manager"
 license=('GPL')
-depends=('texlive-core>=2009' 'perl-libwww' 'perl-term-shellui' 'xz-utils' 'perl-list-moreutils')
+depends=('texlive-core' 'perl-libwww' 'perl-term-shellui' 'xz-utils' 'perl-list-moreutils')
 source=("http://dev.archlinux.org/~francois/$pkgname-$pkgver.tar.gz")
 
 build() {
@@ -20,5 +20,6 @@ build() {
     install -m644 $f $pkgdir/usr/share/texmf-var/arch/tlpkg/TeXLive/ || return 1
   done
 }
+md5sums=('cc22c77169dcef5f017069bfb9574a14')
 
 # vim:set ts=2 sw=2 et:
