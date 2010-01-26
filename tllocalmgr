@@ -4,7 +4,7 @@ use warnings;
 use strict;
 use lib ('tlpkg', '/usr/share/texmf-var/arch/tlpkg');
 use TeXLive::Arch;
-our $VERSION = "0.3.2";
+our $VERSION = "0.3.3";
 our $YEAR = "2009";
 
 use Getopt::Long; 
@@ -22,7 +22,6 @@ GetOptions( $opts,
 
 use File::Path;
 use LWP::Simple;
-#use YAML::Syck; ##for debugging
 use Term::ANSIColor qw(:constants);
 $Term::ANSIColor::AUTORESET = 1; 
 use Term::ShellUI;
@@ -35,8 +34,8 @@ die version(), "\n" if $opts->{'version'};
 my $term = new Term::ShellUI( commands => get_commands());
 $term->prompt( "tllocalmgr> " );
 
-#my $CTANBASEURL="http://mirror.ctan.org/systems/texlive/tlnet/$YEAR";
-my $CTANBASEURL="ftp://tug.org/texlive/tlnet"; # <<<< TEMPORARY
+my $CTANBASEURL="http://mirror.ctan.org/systems/texlive/tlnet/$YEAR";
+#my $CTANBASEURL="ftp://tug.org/texlive/tlnet"; # <<<< TEMPORARY
 
 my $ROOT = "$ENV{HOME}/.texlive/texmf-var/arch";
 my $LOCALDB = "$ROOT/tlpkg/texlive.tlpdb";
@@ -44,11 +43,11 @@ my $LOCALDBXZ = "$LOCALDB.xz";
 my $INSTALLEDPKGS = "/usr/share/texmf-var/arch/installedpkgs";
 my $logfile = "$ROOT/tllocalmgr.log";
 
-my $skipupdate = $opts->{'skipupdate'} || 0 ;
-my $forceupdate = $opts->{'forceupdate'} || 0 ;
-my $location = $opts->{'location'} || $ROOT ;
-my $mirror = $opts->{'mirror'} || $CTANBASEURL ;
-my $localsearch = $opts->{'localsearch'} || 0 ;
+my $skipupdate = $opts->{'skipupdate'} || 0;
+my $forceupdate = $opts->{'forceupdate'} || 0;
+my $location = $opts->{'location'} || $ROOT;
+my $mirror = $opts->{'mirror'} || $CTANBASEURL;
+my $localsearch = $opts->{'localsearch'} || 0;
 
 my $TLARCHIVE="$mirror/archive";
 my $TLPDB="$mirror/tlpkg/texlive.tlpdb.xz";
