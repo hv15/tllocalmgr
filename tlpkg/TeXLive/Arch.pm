@@ -3,10 +3,14 @@ use 5.010;
 use base 'TeXLive::TLPDB';
 use strict;
 use warnings;
-use List::MoreUtils qw/any/;
+use List::MoreUtils qw/any none/;
 use Carp;
 
+my $SKIPPATTERN = qr{^(?:collection|hyphen)-};
+
+
 # TeXLive collections in the texlive-core package:
+# (corresponds to the "medium scheme" of TeX Live)
 my @core_colls = qw/
   basic
   context
@@ -40,53 +44,6 @@ push @core_colls, qw/ langhungarian langlithuanian /;
 
 # also langswedish and langfinnish contain swebib and finbib, resp.,
 # which we add later to bibtexextra
-
-sub collection_with_runfiles_pattern {
-    my ($self, $coll, $pattern) = @_;
-    my @tmp;
-    my $tlcoll = $self->get_package("collection-$coll");
-    foreach my $d ($tlcoll->depends) {
-        my $pkg = $self->get_package($d);
-        my @runfiles = $pkg->runfiles;
-        if ( any { $_ =~ /$pattern/ } @runfiles ) {
-            push @tmp, $pkg->name
-        }
-    }
-    return @tmp
-}
-
-sub collection_with_docfiles_pattern {
-    my ($self, $coll, $pattern) = @_;
-    my @tmp;
-    my $tlcoll = $self->get_package("collection-$coll");
-    foreach my $d ($tlcoll->depends) {
-        my $pkg = $self->get_package($d);
-        my @docfiles = $pkg->docfiles;
-        if ( any { $_ =~ /$pattern/ } @docfiles ) {
-            push @tmp, $pkg->name
-        }
-    }
-    return @tmp
-}
-
-# packages to remove from texlive-core (they are either in texlive-bin
-# or are not needed in Arch Linux):
-my @core_remove = qw(
-    dvipdfm
-    dvipdfmx
-    gsftopk
-    kpathsea
-    luatex
-    pdftex
-    tetex
-    tex
-    texconfig
-    texlive.infra
-    texlive-scripts
-    texworks
-    vlna
-    xdvi
-);
 
 # collections that are specific to texlive-core-doc:
 my @core_doc_colls = qw(
@@ -161,9 +118,36 @@ my @bibtexdocadd = qw( swebib );
 my @core_additional = qw( pgf ruhyphen ukrhyph );
 my @coredoc_additional = qw( pgf luatex pdftex );
 
-#push @core_additional, @binextra_with_texmfdist;
-#push @core_additional, @fontutils_with_texmfdist;
-#push @coredoc_additional, @binextra_with_texmfdistdoc;
+sub collection_with_runfiles_pattern {
+    my ($self, $coll, $pattern) = @_;
+    $pattern = qr{$pattern};
+    my @tmp;
+    my $tlcoll = $self->get_package("collection-$coll");
+    foreach my $d ($tlcoll->depends) {
+        my $pkg = $self->get_package($d);
+        my @runfiles = $pkg->runfiles;
+        if ( any { $_ =~ /$pattern/ } @runfiles ) {
+            push @tmp, $pkg->name
+        }
+    }
+    return @tmp
+}
+
+sub collection_with_docfiles_pattern {
+    my ($self, $coll, $pattern) = @_;
+    $pattern = qr{$pattern};
+    my @tmp;
+    my $tlcoll = $self->get_package("collection-$coll");
+    foreach my $d ($tlcoll->depends) {
+        my $pkg = $self->get_package($d);
+        my @docfiles = $pkg->docfiles;
+        if ( any { $_ =~ /$pattern/ } @docfiles ) {
+            push @tmp, $pkg->name
+        }
+    }
+    return @tmp
+}
+
 
 sub archpackages {
     my $self = shift;
@@ -171,12 +155,12 @@ sub archpackages {
 
     push @{ $tlpackages{'core'} },     @core_additional;
     push @{ $tlpackages{'core'} },
-        $self->collection_with_runfiles_pattern('binextra', 'texmf-dist');
+        $self->collection_with_runfiles_pattern('binextra', 'texmf-dist|RELOC');
     push @{ $tlpackages{'core'} },
-        $self->collection_with_runfiles_pattern('fontutils', 'texmf-dist');
+        $self->collection_with_runfiles_pattern('fontutils', 'texmf-dist|RELOC');
     push @{ $tlpackages{'core-doc'} }, @coredoc_additional;
     push @{ $tlpackages{'core-doc'} },
-        $self->collection_with_docfiles_pattern('binextra', 'texmf-dist');
+        $self->collection_with_docfiles_pattern('binextra', 'texmf-dist|RELOC');
     push @{ $tlpackages{'bibtexextra'} },     @bibtexadd;
     push @{ $tlpackages{'bibtexextra-doc'} }, @bibtexdocadd;
 
@@ -187,31 +171,35 @@ sub archpackages {
             or croak "Can't get object for collection-$coll";
         foreach my $d ( $tlpcoll->depends ) {
 
-            # avoid packages without content in texmf-dist,
-            # i.e. pkgs already in texlive-bin:
-            next if ( any { $_ eq $d } @core_remove );
-
-            my $tlpdep = $self->get_package($d);
-            # avoid packages without "runfiles" and also packages whose name
-            # begin with bin- collection- or hyphen-
-            if ( $tlpdep->runfiles and $d !~ /^(bin|collection|hyphen)-/ ) {
+            my $tlpdep   =  $self->get_package($d);
+            my @runfiles =  $tlpdep->runfiles;
+            my @docfiles =  $tlpdep->docfiles;
+            push @docfiles, $tlpdep->srcfiles;
+            # For texlive-core, avoid packages: 
+            # 1. whose name begin with bin- collection- or hyphen-
+            # 2. without runfiles
+            # 3. without runfiles under texmf-dist
+            if ( $d !~ /$SKIPPATTERN/ 
+                && @runfiles && any { $_ =~ m/texmf-dist|RELOC/ } @runfiles ) {
                 push @{ $tlpackages{'core'} }, $d
             }
-            if ( ( $tlpdep->doccontainermd5 or $tlpdep->docsize )
-                and $d !~ /^(bin|collection|hyphen)-/ )
-            {
+            # For texlive-core-doc, avoid packages:
+            # 1. whose name begin with bin- collection- or hyphen-
+            # 2. without docfiles
+            # 3. without docfiles under texmf-dist
+            if ( $d !~ /$SKIPPATTERN/
+                && @docfiles && any { $_ =~ m/texmf-dist|RELOC/ } @docfiles ) {
                 push @{ $tlpackages{'core-doc'} }, $d;
             }
         }
     }
 
-    # same for texlive-core-doc (in
     foreach my $coll (@core_doc_colls) {
         my $tlpcoll = $self->get_package("collection-$coll")
             or croak "Can't get object for collection-$coll";
         foreach my $d ( $tlpcoll->depends ) {
             push @{ $tlpackages{'core-doc'} }, $d
-            unless $d =~ /^(bin|collection|hyphen)-/;
+            unless $d =~ /$SKIPPATTERN/;
         }
     }
 
@@ -220,10 +208,10 @@ sub archpackages {
     foreach my $d ( $tlpcoll_fontsextra->depends ) {
         next if $d =~ /^(aleph|ocherokee|oinuit)$/;
         push @{ $tlpackages{'fontsextra'} }, $d
-        unless $d =~ /^(bin|collection|hyphen)-/;
+        unless $d =~ /$SKIPPATTERN/;
         my $tlpdep = $self->get_package($d);
         if ( ( $tlpdep->doccontainermd5 or $tlpdep->docsize )
-            and $d !~ /^(bin|collection|hyphen)-/ )
+            and $d !~ /$SKIPPATTERN/ )
         {
             push @{ $tlpackages{'fontsextra-doc'} }, $d;
         }
@@ -240,12 +228,12 @@ sub archpackages {
                 and ( $d eq 'ruhyphen' or $d eq 'ukrhyph' )
             );
             push @{ $tlpackages{$coll} }, $d
-            unless $d =~ /^(bin|collection|hyphen)-/;
+            unless $d =~ /$SKIPPATTERN/;
             my $tlpdep = $self->get_package($d);
             if (
                 ( $tlpdep->doccontainermd5
                     or $tlpdep->docsize )
-                and $d !~ /^(bin|collection|hyphen)-/
+                and $d !~ /$SKIPPATTERN/
             )
             {
                 push @{ $tlpackages{"$coll-doc"} }, $d;
@@ -259,12 +247,12 @@ sub archpackages {
         foreach my $d ( $tlpcoll->depends ) {
             next if $d =~ /^(omega-devanagari|otibet)$/;
             push @{ $tlpackages{'langextra'} }, $d
-            unless ( $d eq 'ebong' or $d =~ /^(bin|collection|hyphen)-/ );
+            unless ( $d eq 'ebong' or $d =~ /$SKIPPATTERN/ );
             my $tlpdep = $self->get_package($d);
             if (
                 ( $tlpdep->doccontainermd5
                     or $tlpdep->docsize )
-                and $d !~ /^(bin|collection|hyphen)-/
+                and $d !~ /$SKIPPATTERN/
                )
             {
                 push @{ $tlpackages{"langextra-doc"} }, $d;
