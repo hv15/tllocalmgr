@@ -26,6 +26,7 @@ my @core_colls = qw/
   langspanish
   langenglish
   latex
+  latex3
   latexrecommended
   luatex
   mathextra
@@ -84,7 +85,6 @@ my @other_colls = qw(
     langcjk
     langcyrillic
     langgreek
-    latex3
     latexextra
     music
     pictures
@@ -115,8 +115,8 @@ my @bibtexadd = qw( swebib finbib );
 # but only swebib has documentation:
 my @bibtexdocadd = qw( swebib );
 
-my @core_additional = qw( pgf ruhyphen ukrhyph );
-my @coredoc_additional = qw( pgf luatex pdftex );
+my @core_additional = qw( bidi pgf ruhyphen ukrhyph );
+my @coredoc_additional = qw( bidi pgf luatex pdftex );
 
 sub collection_with_runfiles_pattern {
     my ($self, $coll, $pattern) = @_;
@@ -245,7 +245,7 @@ sub archpackages {
         my $tlpcoll = $self->get_package("collection-$coll")
             or croak "Can't get object for collection-$coll";
         foreach my $d ( $tlpcoll->depends ) {
-            next if $d =~ /^(omega-devanagari|otibet)$/;
+            next if $d =~ /^(omega-devanagari|otibet|bidi)$/;
             push @{ $tlpackages{'langextra'} }, $d
             unless ( $d eq 'ebong' or $d =~ /$SKIPPATTERN/ );
             my $tlpdep = $self->get_package($d);
