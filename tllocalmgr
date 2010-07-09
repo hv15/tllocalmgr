@@ -634,11 +634,11 @@ url='http://tug.org/texlive/'
 source=('$TLARCHIVE/$pkg.tar.xz')
 md5sums=($pkgmd5)
 
-build() {
+package() {
    cd \$srcdir
    rm -rf tlpkg
    install -m775 -d \$pkgdir/usr/local/share/texmf || return 1
-   wanteddirs=\$(for d in *; do test -d \$d && [[ \$d != texmf* ]] && echo \$d; done)
+   wanteddirs=\$(for d in *; do test -d \$d && [[ \$d != texmf* ]] && echo \$d; done) || true
    for dir in \$wanteddirs; do
      find \$dir -type d -exec install -d -m775 \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
      find \$dir -type f -exec install -m664 '{}' \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
@@ -737,11 +737,11 @@ md5sums=('$docpkgmd5')
 EOF
         };
 		print PKGBUILD <<"EOF"
-build() {
+package() {
    cd \$srcdir
    rm -rf tlpkg
    install -m775 -d \$pkgdir/usr/local/share/texmf || return 1
-   wanteddirs=\$(for d in *; do test -d \$d && [[ \$d != texmf* ]] && echo \$d; done)
+   wanteddirs=\$(for d in *; do test -d \$d && [[ \$d != texmf* ]] && echo \$d; done) || true
    for dir in \$wanteddirs; do
      find \$dir -type d -exec install -d -m775 \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
      find \$dir -type f -exec install -m664 '{}' \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
