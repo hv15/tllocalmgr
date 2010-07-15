@@ -115,8 +115,8 @@ my @bibtexadd = qw( swebib finbib );
 # but only swebib has documentation:
 my @bibtexdocadd = qw( swebib );
 
-my @core_additional = qw( bidi pgf ruhyphen ukrhyph );
-my @coredoc_additional = qw( bidi pgf luatex pdftex );
+my @core_additional = qw( bidi iftex pgf ruhyphen ukrhyph );
+my @coredoc_additional = qw( bidi iftex pgf luatex pdftex );
 
 sub collection_with_runfiles_pattern {
     my ($self, $coll, $pattern) = @_;
