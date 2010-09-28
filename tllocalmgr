@@ -637,17 +637,17 @@ md5sums=($pkgmd5)
 package() {
    cd \$srcdir
    rm -rf tlpkg
-   install -m775 -d \$pkgdir/usr/local/share/texmf || return 1
+   install -m775 -d \$pkgdir/usr/local/share/texmf
    wanteddirs=\$(for d in *; do test -d \$d && [[ \$d != texmf* ]] && echo \$d; done) || true
    for dir in \$wanteddirs; do
-     find \$dir -type d -exec install -d -m775 \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
-     find \$dir -type f -exec install -m664 '{}' \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
+     find \$dir -type d -exec install -d -m775 \$pkgdir/usr/local/share/texmf/'{}' \\;
+     find \$dir -type f -exec install -m664 '{}' \$pkgdir/usr/local/share/texmf/'{}' \\;
    done
    for dir in texmf-dist texmf-doc; do
       if [[ -d \$dir ]]; then
         cd \$dir
-        find . -type d -exec install -d -m775 \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
-        find . -type f -exec install -m664 '{}' \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
+        find . -type d -exec install -d -m775 \$pkgdir/usr/local/share/texmf/'{}' \\;
+        find . -type f -exec install -m664 '{}' \$pkgdir/usr/local/share/texmf/'{}' \\;
         cd ..
       fi
    done
@@ -740,17 +740,17 @@ EOF
 package() {
    cd \$srcdir
    rm -rf tlpkg
-   install -m775 -d \$pkgdir/usr/local/share/texmf || return 1
+   install -m775 -d \$pkgdir/usr/local/share/texmf
    wanteddirs=\$(for d in *; do test -d \$d && [[ \$d != texmf* ]] && echo \$d; done) || true
    for dir in \$wanteddirs; do
-     find \$dir -type d -exec install -d -m775 \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
-     find \$dir -type f -exec install -m664 '{}' \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
+     find \$dir -type d -exec install -d -m775 \$pkgdir/usr/local/share/texmf/'{}' \\;
+     find \$dir -type f -exec install -m664 '{}' \$pkgdir/usr/local/share/texmf/'{}' \\;
    done
    for dir in texmf-dist texmf-doc; do
       if [[ -d \$dir ]]; then
         cd \$dir
-        find . -type d -exec install -d -m775 \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
-        find . -type f -exec install -m664 '{}' \$pkgdir/usr/local/share/texmf/'{}' \\; || return 1
+        find . -type d -exec install -d -m775 \$pkgdir/usr/local/share/texmf/'{}' \\;
+        find . -type f -exec install -m664 '{}' \$pkgdir/usr/local/share/texmf/'{}' \\;
         cd ..
       fi
    done
