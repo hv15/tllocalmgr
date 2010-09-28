@@ -223,6 +223,7 @@ sub archpackages {
             or croak "Can't get object for collection-$coll";
         foreach my $d ( $tlpcoll->depends ) {
             next if ( $coll =~ /^pictures/ and $d eq 'pgf' );
+            next if ( $coll =~ /^genericextra/ and $d eq 'iftex' );
             next if (
                 $coll =~ /^langcyrillic/
                 and ( $d eq 'ruhyphen' or $d eq 'ukrhyph' )
