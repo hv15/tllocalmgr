@@ -9,8 +9,8 @@ arch=('any')
 url="http://wiki.archlinux.org/index.php?title=TeXLive#TeXLive_Local_Manager"
 license=('GPL')
 depends=('texlive-core>=2010' 'perl-libwww' 'perl-term-shellui' 'perl-term-readline-gnu' 'perl-list-moreutils')
-source=("http://dev.archlinux.org/~remy/$pkgname-$pkgver.tar.xz")
-md5sums=('9c3f9e639d1caa850406f25f5d6a38d83dfc7ee')
+source=("ftp://ftp.archlinux.org/other/texlive/$pkgname-$pkgver.tar.xz")
+md5sums=('5bcbebec3857a54b147c6e095b635033')
 
 package() {
   cd $srcdir/$pkgname
