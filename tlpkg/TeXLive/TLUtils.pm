@@ -1,13 +1,12 @@
-# $Id: TLUtils.pm 14666 2009-08-14 20:49:27Z siepo $
-# The inevitable utilities for TeX Live.
-#
-# Copyright 2007, 2008, 2009 Norbert Preining, Reinhard Kotucha
+# $Id: TLUtils.pm 19639 2010-09-10 14:57:40Z preining $
+# TeXLive::TLUtils.pm - the inevitable utilities for TeX Live.
+# Copyright 2007, 2008, 2009, 2010 Norbert Preining, Reinhard Kotucha
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLUtils;
 
-my $svnrev = '$Revision: 14666 $';
+my $svnrev = '$Revision: 19639 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -51,6 +50,7 @@ C<TeXLive::TLUtils> -- utilities used in the TeX Live infrastructure
   TeXLive::TLUtils::basename($path);
   TeXLive::TLUtils::dirname_and_basename($path);
   TeXLive::TLUtils::dir_writable($path);
+  TeXLive::TLUtils::dir_creatable($path);
   TeXLive::TLUtils::mkdirhier($path);
   TeXLive::TLUtils::rmtree($root, $verbose, $safe);
   TeXLive::TLUtils::copy($file, $target_dir);
@@ -69,14 +69,17 @@ C<TeXLive::TLUtils> -- utilities used in the TeX Live infrastructure
   TeXLive::TLUtils::create_updmap($tlpdb,$dest,$localconf);
   TeXLive::TLUtils::create_language_dat($tlpdb,$dest,$localconf);
   TeXLive::TLUtils::create_language_def($tlpdb,$dest,$localconf);
+  TeXLive::TLUtils::create_language_lua($tlpdb,$dest,$localconf);
+  TeXLive::TLUtils::time_estimate($totalsize, $donesize, $starttime)
   TeXLive::TLUtils::install_packages($from_tlpdb,$media,$to_tlpdb,$what,$opt_src, $opt_doc)>);
   TeXLive::TLUtils::install_package($what, $filelistref, $target, $platform);
-  TeXLive::TLUtils::do_postaction($how, $tlpobj, $do_fileassocs, $do_shortcuts, $do_script);
+  TeXLive::TLUtils::do_postaction($how, $tlpobj, $do_fileassocs, $do_menu, $do_desktop, $do_script);
   TeXLive::TLUtils::announce_execute_actions($how, @executes);
   TeXLive::TLUtils::add_symlinks($root, $arch, $sys_bin, $sys_man, $sys_info);
   TeXLive::TLUtils::remove_symlinks($root, $arch, $sys_bin, $sys_man, $sys_info);
   TeXLive::TLUtils::w32_add_to_path($bindir, $multiuser);
   TeXLive::TLUtils::w32_remove_from_path($bindir, $multiuser);
+  TeXLive::TLUtils::setup_persistent_downloads();
 
 =head2 Miscellaneous
 
@@ -86,17 +89,34 @@ C<TeXLive::TLUtils> -- utilities used in the TeX Live infrastructure
   TeXLive::TLUtils::merge_into(\%to, \%from);
   TeXLive::TLUtils::texdir_check($texdir);
   TeXLive::TLUtils::conv_to_w32_path($path);
+  TeXLive::TLUtils::native_slashify($internal_path);
+  TeXLive::TLUtils::forward_slashify($path_from_user);
   TeXLive::TLUtils::give_ctan_mirror();
   TeXLive::TLUtils::give_ctan_mirror_base();
   TeXLive::TLUtils::tlmd5($path);
+  TeXLive::TLUtils::compare_tlpobjs($tlpA, $tlpB);
+  TeXLive::TLUtils::compare_tlpdbs($tlpdbA, $tlpdbB);
+  TeXLive::TLUtils::report_tlpdb_differences(\%ret);
 
 =head1 DESCRIPTION
 
 =cut
 
+# avoid -warnings.
+our $PERL_SINGLE_QUOTE; # we steal code from Text::ParseWords
+use vars qw(
+  $::LOGFILENAME @::LOGLINES 
+  @::debug_hook @::ddebug_hook @::dddebug_hook @::info_hook @::warn_hook
+  @::install_packages_hook
+  $::machinereadable
+  $::no_execute_actions
+  $::regenerate_all_formats
+  $TeXLive::TLDownload::net_lib_avail
+);
+
 BEGIN {
   use Exporter ();
-  use vars qw( @ISA @EXPORT_OK @EXPORT);
+  use vars qw(@ISA @EXPORT_OK @EXPORT);
   @ISA = qw(Exporter);
   @EXPORT_OK = qw(
     &platform
@@ -109,6 +129,7 @@ BEGIN {
     &basename
     &dirname_and_basename
     &dir_writable
+    &dir_creatable
     &mkdirhier
     &rmtree
     &copy
@@ -123,6 +144,7 @@ BEGIN {
     &create_updmap
     &create_language_dat
     &create_language_def
+    &create_language_lua
     &parse_AddFormat_line
     &parse_AddHyphen_line
     &sort_uniq
@@ -131,10 +153,11 @@ BEGIN {
     &member
     &quotewords
     &conv_to_w32_path
+    &native_slashify
+    &forward_slashify
+    &conv_to_w32_path
     &untar
     &merge_into
-    &welcome
-    &welcome_paths
     &give_ctan_mirror
     &give_ctan_mirror_base
     &tlmd5
@@ -146,6 +169,11 @@ BEGIN {
     &w32_add_to_path
     &w32_remove_from_path
     &tlcmp
+    &time_estimate
+    &compare_tlpobjs
+    &compare_tlpdbs
+    &report_tlpdb_differences
+    &setup_persistent_downloads
   );
   @EXPORT = qw(setup_programs download_file process_logging_options
                tldie tlwarn info log debug ddebug dddebug debug_hash
@@ -158,6 +186,7 @@ use Getopt::Long;
 use File::Temp;
 
 use TeXLive::TLConfig;
+
 $::opt_verbosity = 0;  # see process_logging_options
 
 
@@ -188,14 +217,13 @@ subsequent calls just return that value.
 
 =cut
 
-sub platform {
+sub platform 
+{
   unless (defined $::_platform_) {
     if ($^O=~/^MSWin(32|64)$/i) {
       $::_platform_="win32";
     } else {
       my $config_guess = "$::installerdir/tlpkg/installer/config.guess";
-      my @OSs = qw(aix cygwin darwin freebsd hpux irix linux netbsd
-                   openbsd solaris);
 
       # We cannot rely on #! in config.guess but have to call /bin/sh
       # explicitly because sometimes the 'noexec' flag is set in
@@ -206,23 +234,35 @@ sub platform {
       die "$0: could not run $config_guess, cannot proceed, sorry"
         if ! $guessed_platform;
 
-      $guessed_platform =~ s/^x86_64-(.*)-freebsd/amd64-$1-freebsd/;
+      $guessed_platform =~ s/^x86_64-(.*-k?)freebsd/amd64-$1freebsd/;
       my $CPU; # CPU type as reported by config.guess.
       my $OS;  # O/S type as reported by config.guess.
       ($CPU = $guessed_platform) =~ s/(.*?)-.*/$1/;
       $CPU =~ s/^alpha(.*)/alpha/;   # alphaev56 or whatever
-      $CPU =~ s/powerpc64/powerpc/;  # we don't distinguish on ppc64
+      $CPU =~ s/powerpc64/powerpc/;  # we don't distinguish ppc64
+
+      my @OSs = qw(aix cygwin darwin freebsd hpux irix
+                   kfreebsd linux netbsd openbsd solaris);
       for my $os (@OSs) {
-        $OS = $os if $guessed_platform =~ /$os/;
+        # Match word boundary at the beginning of the os name so that
+        #   freebsd and kfreebsd are distinguished.
+        # Do not match word boundary at the end of the os so that
+        #   solaris2 is matched.
+        $OS = $os if $guessed_platform =~ /\b$os/;
       }
       if ($OS eq "darwin") {
-        $CPU = "universal"; # TL provides universal binaries
+        # We never want to guess x86_64-darwin even if config.guess
+        # does, because Leopard can be 64-bit but our x86_64-darwin
+        # binaries will only run on Snow Leopard.
+        $CPU = "universal";
       } elsif ($CPU =~ /^i.86$/) {
         $CPU = "i386";  # 586, 686, whatever
       }
+
       unless (defined $OS) {
         ($OS = $guessed_platform) =~ s/.*-(.*)/$1/;
       }
+
       $::_platform_ = "$CPU-$OS";
     }
   }
@@ -240,32 +280,36 @@ given C<i386-linux> we return C<Intel x86 with GNU/Linux>.
 sub platform_desc {
   my ($platform) = @_;
 
-  my %platform_name=(
-    'alpha-linux'    => 'DEC Alpha with GNU/Linux',
-    'alphaev5-osf'   => 'DEC Alphaev5 OSF',
-    'amd64-freebsd'  => 'x86_64 with FreeBSD',
-    'hppa-hpux'      => 'HP-UX',
-    'i386-cygwin'    => 'Intel x86 with Cygwin',
-    'i386-darwin'    => 'Intel x86 with MacOSX/Darwin',
-    'i386-freebsd'   => 'Intel x86 with FreeBSD',
-    'i386-openbsd'   => 'Intel x86 with OpenBSD',
-    'i386-netbsd'    => 'Intel x86 with NetBSD',
-    'i386-linux'     => 'Intel x86 with GNU/Linux',
-    'i386-solaris'   => 'Intel x86 with Sun Solaris',
-    'mips-irix'      => 'SGI IRIX',
-    'powerpc-aix'    => 'PowerPC with AIX',
-    'powerpc-darwin' => 'PowerPC with MacOSX/Darwin',
-    'powerpc-linux'  => 'PowerPC with GNU/Linux',
-    'sparc-linux'    => 'Sparc with GNU/Linux',
-    'sparc-solaris'  => 'Sparc with Solaris',
+  my %platform_name = (
+    'alpha-linux'      => 'DEC Alpha with GNU/Linux',
+    'alphaev5-osf'     => 'DEC Alphaev5 OSF',
+    'amd64-freebsd'    => 'x86_64 with FreeBSD',
+    'amd64-kfreebsd'   => 'x86_64 with GNU/FreeBSD',
+    'hppa-hpux'        => 'HP-UX',
+    'i386-cygwin'      => 'Intel x86 with Cygwin',
+    'i386-darwin'      => 'Intel x86 with MacOSX/Darwin',
+    'i386-freebsd'     => 'Intel x86 with FreeBSD',
+    'i386-kfreebsd'    => 'Intel x86 with GNU/FreeBSD',
+    'i386-openbsd'     => 'Intel x86 with OpenBSD',
+    'i386-netbsd'      => 'Intel x86 with NetBSD',
+    'i386-linux'       => 'Intel x86 with GNU/Linux',
+    'i386-solaris'     => 'Intel x86 with Solaris',
+    'mips-irix'        => 'SGI IRIX',
+    'powerpc-aix'      => 'PowerPC with AIX',
+    'powerpc-darwin'   => 'PowerPC with MacOSX/Darwin',
+    'powerpc-linux'    => 'PowerPC with GNU/Linux',
+    'sparc-linux'      => 'Sparc with GNU/Linux',
+    'sparc-solaris'    => 'Sparc with Solaris',
     'universal-darwin' => 'universal binaries for MacOSX/Darwin',
-    'win32'          => 'Windows',
-    'x86_64-linux'   => 'x86_64 with GNU/Linux'
-      );
+    'win32'            => 'Windows',
+    'x86_64-darwin'    => 'x86_64 with MacOSX/Darwin',
+    'x86_64-linux'     => 'x86_64 with GNU/Linux',
+    'x86_64-solaris'   => 'x86_64 with Solaris',
+  );
 
   # the inconsistency between amd64-freebsd and x86_64-linux is
   # unfortunate (it's the same hardware), but the os people say those
-  # are the conventional names on the respective os's, so ...
+  # are the conventional names on the respective os's, so we follow suit.
 
   if (exists $platform_name{$platform}) {
     return "$platform_name{$platform}";
@@ -414,7 +458,7 @@ sub xchdir
 
 =item C<xsystem(@args)>
 
-Run C<system(@args)> and die if unsuccessfully.
+Run C<system(@args)> and die if unsuccessful.
 
 =cut
 
@@ -440,7 +484,7 @@ output as first element and the return value (exit code) as second.
 sub run_cmd {
   my $cmd = shift;
   my $output = `$cmd`;
-  $retval = $?;
+  my $retval = $?;
   if ($retval != 0) {
     $retval /= 256 if $retval > 0;
   }
@@ -514,6 +558,27 @@ sub dirname_and_basename {
 }
 
 
+=item C<dir_creatable($path)>
+
+Tests whether its argument is a directory where we can create a directory.
+
+=cut
+
+sub dir_creatable {
+  $path=shift;
+  return 0 unless -d $path;
+  $path =~ s!\\!/!g if win32;
+  $path =~ s!/$!!g;
+  my $i = 0;
+  while (-e $path . "/" . $i) { $i++; }
+  my $d = $path."/".$i;
+  return 0 unless mkdir $d;
+  return 0 unless -d $d;
+  rmdir $d;
+  return 1;
+}
+
+
 =item C<dir_writable($path)>
 
 Tests whether its argument is writable by trying to write to
@@ -542,21 +607,12 @@ sub dir_writable {
   my $i = 0;
   while (-e $path . "/" . $i) { $i++; }
   my $f = $path."/".$i;
-  if (win32) {
-    my $fb = $f;
-    $fb =~ s!/!\\!g;
-    return 0 if
-      system('copy /b ' . $ENV{'COMSPEC'} . ' "' . $fb . '" >nul 2>&1');
-    unlink $f if -e $f;
-    return 1;
-  } else {
-    return 0 unless open TEST, ">".$f;
-    my $written = 0;
-    $written = (print TEST "\n");
-    close TEST;
-    unlink $f;
-    return $written;
-  }
+  return 0 unless open TEST, ">".$f;
+  my $written = 0;
+  $written = (print TEST "\n");
+  close TEST;
+  unlink $f;
+  return $written;
 }
 
 
@@ -572,6 +628,9 @@ sub mkdirhier {
 
   return if (-d "$tree");
   my $subdir = "";
+  # win32 is special as usual: we need to separate //servername/ part
+  # from the UNC path, since (! -d //servername/) tests true
+  $subdir = $& if ( win32() && ($tree =~ s!^//[^/]+/!!) );
 
   @dirs = split (/\//, $tree);
   for my $dir (@dirs) {
@@ -769,8 +828,8 @@ C<(-l $file)> will never return 'C<true>' and so symlinks will be
 (uselessly) copied as regular files.
 
 C<copy> invokes C<mkdirhier> if target directories do not exist.  Files
-have mode C<0777>-I<umask> if they are executable and C<0666>-I<umask>
-otherwise.
+have mode C<0777> if they are executable and C<0666> otherwise, with
+the set bits in I<umask> cleared in each case.
 
 C<$file> can begin with a file:/ prefix.
 
@@ -822,7 +881,7 @@ sub copy
     binmode IN;
 
     $mode = (-x "$infile") ? oct("0777") : oct("0666");
-    $mode -= umask;
+    $mode &= ~umask;
 
     open (OUT, ">$outfile") || die "open(>$outfile) failed: $!";
     binmode OUT;
@@ -1039,6 +1098,52 @@ sub removed_dirs
   return keys %removed_dirs;
 }
 
+=item C<time_estimate($totalsize, $donesize, $starttime)>
+
+Returns the current running time and the estimated total time
+based on the total size, the already done size, and the start time.
+
+=cut
+
+sub time_estimate {
+  my ($totalsize, $donesize, $starttime) = @_;
+  if ($donesize <= 0) {
+    return ("??:??", "??:??");
+  }
+  my $curtime = time();
+  my $passedtime = $curtime - $starttime;
+  my $esttotalsecs = int ( ( $passedtime * $totalsize ) / $donesize );
+  #
+  # we change the display to show that passed time instead of the
+  # estimated remaining time. We keep the old code and naming and
+  # only initialize the $remsecs to the $passedtime instead.
+  # my $remsecs = $esttotalsecs - $passedtime;
+  my $remsecs = $passedtime;
+  my $min = int($remsecs/60);
+  my $hour;
+  if ($min >= 60) {
+    $hour = int($min/60);
+    $min %= 60;
+  }
+  my $sec = $remsecs % 60;
+  $remtime = sprintf("%02d:%02d", $min, $sec);
+  if ($hour) {
+    $remtime = sprintf("%02d:$remtime", $hour);
+  }
+  my $tmin = int($esttotalsecs/60);
+  my $thour;
+  if ($tmin >= 60) {
+    $thour = int($tmin/60);
+    $tmin %= 60;
+  }
+  my $tsec = $esttotalsecs % 60;
+  $tottime = sprintf("%02d:%02d", $tmin, $tsec);
+  if ($thour) {
+    $tottime = sprintf("%02d:$tottime", $thour);
+  }
+  return($remtime, $tottime);
+}
+
 
 =item C<install_packages($from_tlpdb, $media, $to_tlpdb, $what, $opt_src, $opt_doc)>
 
@@ -1095,39 +1200,9 @@ sub install_packages {
     my $tlpobj = $tlpobjs{$package};
     my $reloc = $tlpobj->relocated;
     $n++;
-    my $remtime = "??:??";
-    my $tottime = "??:??";
-    if ($donesize > 0) {
-      # try to compute the remaining time
-      my $curtime = time();
-      my $passedtime = $curtime - $starttime;
-      my $esttotalsecs = int ( ( $passedtime * $totalsize ) / $donesize );
-      my $remsecs = $esttotalsecs - $passedtime;
-      my $min = int($remsecs/60);
-      my $hour;
-      if ($min >= 60) {
-        $hour = int($min/60);
-        $min %= 60;
-      }
-      my $sec = $remsecs % 60;
-      $remtime = sprintf("%02d:%02d", $min, $sec);
-      if ($hour) {
-        $remtime = sprintf("%02d:$remtime", $hour);
-      }
-      my $tmin = int($esttotalsecs/60);
-      my $thour;
-      if ($tmin >= 60) {
-        $thour = int($tmin/60);
-        $tmin %= 60;
-      }
-      my $tsec = $esttotalsecs % 60;
-      $tottime = sprintf("%02d:%02d", $tmin, $tsec);
-      if ($thour) {
-        $tottime = sprintf("%02d:$tottime", $thour);
-      }
-    }
+    my ($estrem, $esttot) = time_estimate($totalsize, $donesize, $starttime);
     my $infostr = sprintf("Installing [%0${td}d/$totalnr, "
-                     . "time/total: $remtime/$tottime]: $package [%dk]",
+                     . "time/total: $estrem/$esttot]: $package [%dk]",
                      $n, int($tlpsizes{$package}/1024) + 1);
     info("$infostr\n");
     foreach my $h (@::install_packages_hook) {
@@ -1371,7 +1446,7 @@ sub install_package {
       return 0;
     }
     if (!TeXLive::TLUtils::untar($tarfile, $target, 1)) {
-      tlwarn("Un-tarring $tarfile did not succeed.\n");
+      tlwarn("untarring $tarfile failed, stopping install.\n");
       return 0;
     }
     # we remove the created .tlpobj it is recreated anyway in
@@ -1393,11 +1468,11 @@ sub install_package {
   return 1;
 }
 
-=item C<do_postaction($how, $tlpobj, $do_fileassocs, $do_shortcuts, $do_script)>
+=item C<do_postaction($how, $tlpobj, $do_fileassocs, $do_menu, $do_desktop, $do_script)>
 
 Evaluates the C<postaction> fields in the C<$tlpobj>. The first parameter
 can be either C<install> or C<remove>. The second gives the TLPOBJ whos
-postactions should be evaluated, and the last three arguments specify
+postactions should be evaluated, and the last four arguments specify
 what type of postactions should (or shouldn't) be evaluated.
 
 Returns 1 on success, and 0 on failure.
@@ -1405,7 +1480,7 @@ Returns 1 on success, and 0 on failure.
 =cut
 
 sub do_postaction {
-  my ($how, $tlpobj, $do_fileassocs, $do_shortcuts, $do_script) = @_;
+  my ($how, $tlpobj, $do_fileassocs, $do_menu, $do_desktop, $do_script) = @_;
   my $ret = 1;
   if (!defined($tlpobj)) {
     tlwarn("do_postaction: didn't get a tlpobj\n");
@@ -1415,8 +1490,7 @@ sub do_postaction {
     if $tlpobj->postactions;
   for my $pa ($tlpobj->postactions) {
     if ($pa =~ m/^\s*shortcut\s+(.*)\s*$/) {
-      next unless $do_shortcuts;
-      $ret &&= _do_postaction_shortcut($how, $tlpobj, $1);
+      $ret &&= _do_postaction_shortcut($how, $tlpobj, $do_menu, $do_desktop, $1);
     } elsif ($pa =~ m/\s*filetype\s+(.*)\s*$/) {
       next unless $do_fileassocs;
       $ret &&= _do_postaction_filetype($how, $tlpobj, $1);
@@ -1500,7 +1574,7 @@ sub _do_postaction_filetype {
   my $texdir = `kpsewhich -var-value=SELFAUTOPARENT`;
   chomp($texdir);
   my $texdir_bsl = conv_to_w32_path($texdir);
-  $cmd =~ s!^TEXDIR/!$texdir/!g;
+  $cmd =~ s!^("?)TEXDIR/!$1$texdir/!g;
 
   &log("postaction $how filetype for " . $tlpobj->name .
     ": $name, $cmd\n");
@@ -1560,7 +1634,7 @@ sub _do_postaction_script {
 }
 
 sub _do_postaction_shortcut {
-  my ($how, $tlpobj, $pa) = @_;
+  my ($how, $tlpobj, $do_menu, $do_desktop, $pa) = @_;
   return 1 unless win32();
   my ($errors, %keyval) =
     parse_into_keywords($pa, qw/type name icon cmd args hide/);
@@ -1581,6 +1655,13 @@ sub _do_postaction_shortcut {
     return 0;
   }
 
+  if (($type eq "menu") && !$do_menu) {
+    return 1;
+  }
+  if (($type eq "desktop") && !$do_desktop) {
+    return 1;
+  }
+
   # name can be an arbitrary string
   if (!defined($keyval{'name'})) {
     tlwarn("name of shortcut postaction not given\n");
@@ -1593,8 +1674,8 @@ sub _do_postaction_shortcut {
   my $cmd = (defined($keyval{'cmd'}) ? $keyval{'cmd'} : '');
   my $args = (defined($keyval{'args'}) ? $keyval{'args'} : '');
 
-  # hide can be only 0 or 1, and defaults to 0
-  my $hide = (defined($keyval{'hide'}) ? $keyval{'hide'} : 0);
+  # hide can be only 0 or 1, and defaults to 1
+  my $hide = (defined($keyval{'hide'}) ? $keyval{'hide'} : 1);
   if (($hide ne "0") && ($hide ne "1")) {
     tlwarn("hide of shortcut postaction $hide is unknown (0, 1)\n");
     return 0;
@@ -1673,6 +1754,9 @@ after all packages have been unpacked.
 
 sub announce_execute_actions {
   my ($type, $tlp) = @_;
+  # do simply return immediately if execute actions are suppressed
+  return if $::no_execute_actions;
+
   if (defined($type) && ($type eq "regenerate-formats")) {
     $::regenerate_all_formats = 1;
     return;
@@ -1887,9 +1971,9 @@ sub w32_remove_from_path {
 
 =pod
 
-=item C<untar($tarfile,$targetdir, $remove_tarfile)>
+=item C<untar($tarfile, $targetdir, $remove_tarfile)>
 
-Unpacked C<$tarfile> in C<$targetdir> (changing directories to
+Unpacke C<$tarfile> in C<$targetdir> (changing directories to
 C<$targetdir> and then back to the original directory).  If
 C<$remove_tarfile> is true, unlink C<$tarfile> after unpacking.
 
@@ -1914,7 +1998,7 @@ sub untar {
   chdir($targetdir) || die "chdir($targetdir) failed: $!";
 
   if (system($tar, "xf", $tarfile) != 0) {
-    tlwarn("untarring $tarfile failed, please retry\n");
+    tlwarn("untar: untarring $tarfile failed (in $targetdir)\n");
     $ret = 0;
   } else {
     $ret = 1;
@@ -2122,7 +2206,8 @@ sub setup_unix_one {
         debug("Using system $p (tested).\n");
       } else {
         tlwarn("$0: Initialization failed (in setup_unix_one):\n");
-        tlwarn("  could not find a usable program for $p.\n");
+        tlwarn("$0: could not find a usable $p.\n");
+        tlwarn("$0: Please install $p and try again.\n");
         return 0;
       }
     } else {
@@ -2146,7 +2231,7 @@ we try a literal C<wget>.
 Downloading honors two environment variables: C<TL_DOWNLOAD_PROGRAM> and
 C<TL_DOWNLOAD_ARGS>. The former overrides the above specification
 devolving to C<wget>, and the latter overrides the default wget
-arguments, which are: C<--tries=8 --timeout=60 -q -O>.
+arguments.
 
 C<TL_DOWNLOAD_ARGS> must be defined so that the file the output goes to
 is the first argument after the C<TL_DOWNLOAD_ARGS>.  Thus, typically it
@@ -2188,11 +2273,21 @@ sub download_file {
   } else {
     $url = "$TeXLiveURL/$relpath";
   }
+  if (defined($::tldownload_server) && $::tldownload_server->enabled) {
+    if (($ret = $::tldownload_server->get_file($url, $dest))) {
+      debug("downloading file via permanent connection succeeded\n");
+      return $ret;
+    } else {
+      tlwarn("permanent server connection set up, but downloading did not succeed!");
+      tlwarn("Retrying with wget.\n");
+    }
+  }
   my $ret = _download_file($url, $dest, $wget);
   return($ret);
 }
 
-sub _download_file {
+sub _download_file
+{
   my ($url, $dest, $wgetdefault) = @_;
   if (win32()) {
     $dest =~ s!/!\\!g;
@@ -2200,7 +2295,7 @@ sub _download_file {
 
   my $wget = $ENV{"TL_DOWNLOAD_PROGRAM"} || $wgetdefault;
   my $wgetargs = $ENV{"TL_DOWNLOAD_ARGS"}
-                 || "--tries=10 --timeout=90 -q -O";
+                 || "--user-agent=texlive/wget --tries=10 --timeout=900 -q -O";
 
   debug("downloading $url using $wget $wgetargs\n");
   my $ret;
@@ -2285,47 +2380,169 @@ sub make_local_skeleton {
 
 =item C<create_language_def($tlpdb, $dest, $localconf)>
 
-These four functions create C<fmtutil.cnf>, C<updmap.cfg>, C<language.dat>,
-and C<language.def> respectively, in C<$dest> (which by default is below
-C<$TEXMFSYSVAR>).  These functions merge the information present in the
-TLPDB C<$tlpdb> (formats, maps, hyphenations) with local configuration
-additions: C<$localconf>.
+=item C<create_language_lua($tlpdb, $dest, $localconf)>
 
-Currently the "merging" is done trivially by appending the content of
-the local configuration files at the end of the file. This should be
-improved (checking for duplicates).
+These five functions create C<fmtutil.cnf>, C<updmap.cfg>, C<language.dat>,
+C<language.def>, and C<language.dat.lua> respectively, in C<$dest> (which by
+default is below C<$TEXMFSYSVAR>).  These functions merge the information
+present in the TLPDB C<$tlpdb> (formats, maps, hyphenations) with local
+configuration additions: C<$localconf>.
+
+Currently the merging is done by omitting disabled entries specified
+in the local file, and then appending the content of the local
+configuration files at the end of the file. We should also check for
+duplicates, maybe even error checking.
 
 =cut
 
+#
+# get_disabled_local_configs
+# returns the list of disabled formats/hyphenpatterns/maps
+# disabling is done by putting
+#    #!NAME
+# or
+#    %!NAME
+# into the respective foo-local.cnf/cfg file
+# 
+sub get_disabled_local_configs {
+  my $localconf = shift;
+  my $cc = shift;
+  my @disabled = ();
+  if (-r "$localconf") {
+    open FOO, "<$localconf"
+      or die "strange, -r ok but cannot open $localconf: $!";
+    my @tmp = <FOO>;
+    close(FOO) || warn("Closing $localconf did not succeed: $!");
+    @disabled = map { if (m/^$cc!(\S+)\s*$/) { $1 } else { }} @tmp;
+  }
+  return @disabled;
+}
+
 sub create_fmtutil {
   my ($tlpdb,$dest,$localconf) = @_;
-  my @lines = $tlpdb->fmtutil_cnf_lines;
+  my @lines = $tlpdb->fmtutil_cnf_lines(
+                         get_disabled_local_configs($localconf, '#'));
   _create_config_files($tlpdb, "texmf/web2c/fmtutil-hdr.cnf", $dest,
                        $localconf, 0, '#', \@lines);
 }
 
 sub create_updmap {
   my ($tlpdb,$dest,$localconf) = @_;
-  my @lines = $tlpdb->updmap_cfg_lines;
-  _create_config_files($tlpdb, "texmf/web2c/updmap-hdr.cfg", $dest,
-                       $localconf, 0, '#', \@lines);
+  my @tlpdblines = $tlpdb->updmap_cfg_lines(
+                             get_disabled_local_configs($localconf, '#'));
+  # we do not use _create_config_files here because we want to
+  # parse the $localconf file for the five options in updmap.cfg
+  #_create_config_files($tlpdb, "texmf/web2c/updmap-hdr.cfg", $dest,
+  #                     $localconf, 0, '#', \@tlpdblines);
+  my $headfile = "texmf/web2c/updmap-hdr.cfg";
+  my $root = $tlpdb->root;
+  my @lines;
+  my @localconflines;
+  my %configs;
+  if (-r "$localconf") {
+    #
+    # this should be done more intelligently, but for now only add those
+    # lines without any duplication check ...
+    open FOO, "<$localconf"
+      or die "strange, -r ok but cannot open $localconf: $!";
+    my @bla = <FOO>;
+    close(FOO);
+    for my $l (@bla) {
+      my ($k, $v, @rest) = split(' ', $l);
+      if (check_updmap_config_value($k, $v, $localconf)) {
+        $configs{$k} = $v;
+      } else {
+        push @localconflines, $l;
+      }
+    }
+  }
+  #
+  # read the -hdr file and replace the options if given in the local
+  # config file
+  open(INFILE,"<$root/$headfile") or die("Cannot open $root/$headfile");
+  for my $l (<INFILE>) {
+    my ($k, $v, @rest) = split(' ', $l);
+    if (check_updmap_config_value($k, $v, "$root/$headfile")) {
+      if (defined($configs{$k})) {
+        push @lines, "$k $configs{$k}\n";
+      } else {
+        push @lines, $l;
+      }
+    } else {
+      push @lines, $l;
+    }
+  }
+  close (INFILE);
+
+  # add the lines from the tlpdb
+  push @lines, @tlpdblines;
+
+  # add additional local config lines
+  push @lines, @localconflines;
+
+  if ($#lines >= 0) {
+    open(OUTFILE,">$dest")
+      or die("Cannot open $dest for writing: $!");
+
+    printf OUTFILE "# Generated by %s on %s\n", "$0", scalar localtime;
+    print OUTFILE @lines;
+    close(OUTFILE) || warn "close(>$dest) failed: $!";
+  }
+}
+
+sub check_updmap_config_value {
+  my ($k, $v, $f) = @_;
+  return 0 if !defined($k);
+  return 0 if !defined($v);
+  if (member( $k, qw/dvipsPreferOutline dvipsDownloadBase35 
+                     pdftexDownloadBase14 dvipdfmDownloadBase14/)) {
+    if ($v eq "true" || $v eq "false") {
+      return 1;
+    } else {
+      tlwarn("Unknown setting for $k in $f: $v\n");
+      return 0;
+    }
+  } elsif ($k eq "LW35") {
+    if (member($v, qw/URW URWkb ADOBE ADOBEkb/)) {
+      return 1;
+    } else {
+      tlwarn("Unknown setting for LW35  in $f: $v\n");
+      return 0;
+    }
+  } else {
+    return 0;
+  }
 }
 
 sub create_language_dat {
   my ($tlpdb,$dest,$localconf) = @_;
-  my @lines = $tlpdb->language_dat_lines;
+  # no checking for disabled stuff for language.dat and .def
+  my @lines = $tlpdb->language_dat_lines(
+                         get_disabled_local_configs($localconf, '%'));
   _create_config_files($tlpdb, "texmf/tex/generic/config/language.us", $dest,
                        $localconf, 0, '%', \@lines);
 }
 
 sub create_language_def {
   my ($tlpdb,$dest,$localconf) = @_;
-  my @lines = $tlpdb->language_def_lines;
+  # no checking for disabled stuff for language.dat and .def
+  my @lines = $tlpdb->language_def_lines(
+                         get_disabled_local_configs($localconf, '%'));
   my @postlines;
   push @postlines, "%%% No changes may be made beyond this point.\n";
   push @postlines, "\n";
   push @postlines, "\\uselanguage {USenglish}             %%% This MUST be the last line of the file.\n";
   _create_config_files ($tlpdb, "texmf/tex/generic/config/language.us.def", $dest, $localconf, 1, '%', \@lines, @postlines);
+}
+
+sub create_language_lua {
+  my ($tlpdb,$dest,$localconf) = @_;
+  # no checking for disabled stuff for language.dat and .lua
+  my @lines = $tlpdb->language_lua_lines(
+                         get_disabled_local_configs($localconf, '--'));
+  my @postlines = ("}\n");
+  _create_config_files ($tlpdb, "texmf/tex/generic/config/language.us.lua",
+    $dest, $localconf, 0, '--', \@lines, @postlines);
 }
 
 sub _create_config_files {
@@ -2342,6 +2559,7 @@ sub _create_config_files {
     open FOO, "<$localconf"
       or die "strange, -r ok but cannot open $localconf: $!";
     my @tmp = <FOO>;
+    close (FOO);
     push @lines, @tmp;
   }
   if (@postlines) {
@@ -2363,11 +2581,13 @@ sub _create_config_files {
 sub parse_AddHyphen_line {
   my $line = shift;
   my %ret;
+  # default values
   my $default_lefthyphenmin = 2;
   my $default_righthyphenmin = 3;
   $ret{"lefthyphenmin"} = $default_lefthyphenmin;
   $ret{"righthyphenmin"} = $default_righthyphenmin;
-  for my $p (split(' ', $line)) {
+  $ret{"synonyms"} = [];
+  for my $p (quotewords('\s+', 0, "$line")) {
     my ($a, $b) = split /=/, $p;
     if ($a eq "name") {
       if (!$b) {
@@ -2393,13 +2613,42 @@ sub parse_AddHyphen_line {
       $ret{"file"} = $b;
       next;
     }
+    if ($a eq "file_patterns") {
+        $ret{"file_patterns"} = $b;
+        next;
+    }
+    if ($a eq "file_exceptions") {
+        $ret{"file_exceptions"} = $b;
+        next;
+    }
+    if ($a eq "luaspecial") {
+        $ret{"luaspecial"} = $b;
+        next;
+    }
+    if ($a eq "databases") {
+      @{$ret{"databases"}} = split /,/, $b;
+      next;
+    }
     if ($a eq "synonyms") {
       @{$ret{"synonyms"}} = split /,/, $b;
       next;
     }
+    if ($a eq "comment") {
+        $ret{"comment"} = $b;
+        next;
+    }
     # should not be reached at all
-    $ret{"error"} = "Unknown language directive $e";
+    $ret{"error"} = "Unknown language directive $a";
     return %ret;
+  }
+  # this default value couldn't be set earlier
+  if (not defined($ret{"databases"})) {
+    if (defined $ret{"file_patterns"} or defined $ret{"file_exceptions"}
+        or defined $ret{"luaspecial"}) {
+      @{$ret{"databases"}} = qw(dat def lua);
+    } else {
+      @{$ret{"databases"}} = qw(dat def);
+    }
   }
   return %ret;
 }
@@ -2552,8 +2801,8 @@ sub texdir_check {
   my ($texdir) = shift;                       # PATH/texlive/2008
   my $texdirparent = dirname($texdir);        # PATH/texlive
   my $texdirpparent = dirname($texdirparent); # PATH
-  if ( (dir_writable($texdirpparent)) ||
-       ( (-d $texdirparent) && (dir_writable($texdirparent)) ) ||
+  if ( (dir_creatable($texdirpparent)) ||
+       ( (-d $texdirparent) && (dir_creatable($texdirparent)) ) ||
        ( (-d $texdir) && (dir_writable($texdir)) ) ) {
     return 1;
   }
@@ -2582,7 +2831,7 @@ sub _logit {
       if (defined($::LOGFILE)) {
         print $::LOGFILE @rest;
       } else {
-        push @::LOGLINES, join ("", @rest);
+        push (@::LOGLINES, join ("", @rest));
       }
     }
   }
@@ -2824,68 +3073,6 @@ sub process_logging_options {
 }
 
 
-=item C<welcome>
-
-Return the welcome message.
-
-=cut
-
-sub welcome {
-  my $welcome=<<"EOF";
-
- See
-   $::vars{'TEXDIR'}/index.html
- for links to documentation.  The TeX Live web site (http://tug.org/texlive/)
- contains any updates and corrections.
-
- TeX Live is a joint project of the TeX user groups around the world;
- please consider supporting it by joining the group best for you. The
- list of groups is available on the web at http://tug.org/usergroups.html.
-
- Welcome to TeX Live!
-
-EOF
-  return $welcome;
-}
-
-
-=item C<welcome>
-
-The same welcome message as above but with hints about C<PATH>, C<MANPATH>,
-and C<INFOPATH>.
-
-=cut
-
-sub welcome_paths {
-  my $welcome=<<"EOF";
-
- See
-   $::vars{'TEXDIR'}/index.html
- for links to documentation.  The TeX Live web site (http://tug.org/texlive/)
- contains any updates and corrections.
-
- TeX Live is a joint project of the TeX user groups around the world;
- please consider supporting it by joining the group best for you. The
- list of groups is available on the web at http://tug.org/usergroups.html.
-
- Add $::vars{'TEXDIR'}/texmf/doc/man to MANPATH.
- Add $::vars{'TEXDIR'}/texmf/doc/info to INFOPATH.
-EOF
-  if ($::vars{'from_dvd'} and !win32()) {
-    $welcome .= <<"EOF";
- Set TEXMFCNF to $::vars{'TEXMFSYSVAR'}/web2c.
-EOF
-}
-  $welcome .= <<"EOF";
- Most importantly, add $::vars{'TEXDIR'}/bin/$::vars{'this_platform'}
- to your PATH for current and future sessions.
-
- Welcome to TeX Live!
-
-EOF
-  return $welcome;
-}
-
 =pod
 
 This function returns a "windowsified" version of its single argument
@@ -2915,54 +3102,179 @@ sub conv_to_w32_path {
   return($p);
 }
 
+=pod
 
-=item C<give_ctan_mirror()>
+The next two functions are meant for user input/output in installer menus.
+They help making the windows user happy by turning slashes into backslashes
+before displaying a path, and our code happy by turning backslashes into forwars
+slashes after reading a path. They both are no-ops on Unix.
 
-=item C<give_ctan_mirror_base()>
+=cut
 
-Return the specific mirror chosen from the generic CTAN auto-redirecting
-default (specified in L<$TLConfig::TexLiveServerURL>) if possible, else
-the default url again.
+sub native_slashify {
+  my ($r) = @_;
+  $r =~ s!/!\\!g if win32();
+  return $r;
+}
+
+sub forward_slashify {
+  my ($r) = @_;
+  $r =~ s!\\!/!g if win32();
+  return $r;
+}
+
+=item C<setup_persistent_downloads()>
+
+Set up to use persistent connections using LWP/TLDownload.
+
+=cut
+
+sub setup_persistent_downloads
+{
+  if ($TeXLive::TLDownload::net_lib_avail) {
+    return ($::tldownload_server = TeXLive::TLDownload->new);
+  }
+  return 0;
+}
+
+
+=item C<query_ctan_mirror()>
+
+Return a particular mirror given by the generic CTAN auto-redirecting
+default (specified in L<$TLConfig::TexLiveServerURL>) if we get a
+response, else the empty string.
 
 Neither C<TL_DOWNLOAD_PROGRAM> nor <TL_DOWNLOAD_ARGS> is honored (see
 L<download_file>), since certain options have to be set to do the job
 and the program has to be C<wget> since we parse the output.
 
-The B<_base> variant returns the mirror without any TeX Live specific
-location added while the other variant gives the location of the
-TeX Live net distribution on the respective mirror.
-
 =cut
 
-sub give_ctan_mirror_base
+sub query_ctan_mirror
 {
   my $wget = $::progs{'wget'};
   if (!defined ($wget)) {
-    tlwarn ("give_ctan_mirror: Programs not set up, trying wget\n");
+    tlwarn("query_ctan_mirror: Programs not set up, trying wget\n");
     $wget = "wget";
   }
 
   # we need the verbose output, so no -q.
   # do not reduce retries here, but timeout still seems desirable.
-  my $cmd = "$wget $TeXLiveServerURL --timeout=60 -O "
+  my $mirror = $TeXLiveServerURL;
+  my $cmd = "$wget $mirror --timeout=60 -O "
             . (win32() ? "nul" : "/dev/null") . " 2>&1";
-  my @out = `$cmd`;
-  # analyze the output for the mirror actually selected.
-  my $mirror = $TeXLiveURL;
-  foreach (@out) {
-    if (m/^Location: (\S*)\s*.*$/) {
-      (my $mhost = $1) =~ s,/*$,,;  # remove trailing slashes since we add it
-      $mirror = "$mhost";
-      last;
+
+  # we try 3 times to get a mirror from mirror.ctan.org in case we have
+  # bad luck with what gets returned.
+  my $max_trial = 3;
+  my $mhost;
+  for (my $i = 1; $i <= $max_trial; $i++) {
+    my @out = `$cmd`;
+    # analyze the output for the mirror actually selected.
+    foreach (@out) {
+      if (m/^Location: (\S*)\s*.*$/) {
+        (my $mhost = $1) =~ s,/*$,,;  # remove trailing slashes since we add it
+        return $mhost;
+      }
     }
+    sleep(1);
   }
-  # if we cannot find a mirror, return the default again.
-  return $mirror;
+
+  # we are still here, so three times we didn't get a mirror, give up 
+  # and return undefined
+  return;
 }
+  
+=item C<check_on_working_mirror($mirror)>
+
+Check if MIRROR is functional.
+
+=cut
+
+sub check_on_working_mirror
+{
+  my $mirror = shift;
+
+  my $wget = $::progs{'wget'};
+  if (!defined ($wget)) {
+    tlwarn ("check_on_working_mirror: Programs not set up, trying wget\n");
+    $wget = "wget";
+  }
+  #
+  # the test is currently not completely correct, because we do not
+  # use the LWP if it is set up for it, but I am currently too lazy
+  # to program it,
+  # so try wget and only check for the return value
+  # please KEEP the / after $mirror, some ftp mirrors do give back
+  # an error if the / is missing after ../CTAN/
+  my $cmd = "$wget $mirror/ --timeout=60 -O "
+            . (win32() ? "nul" : "/dev/null")
+            . " 2>" . (win32() ? "nul" : "/dev/null");
+  my $ret = system($cmd);
+  # if return value is not zero it is a failure, so switch the meanings
+  return ($ret ? 0 : 1);
+}
+
+=item C<give_ctan_mirror_base()>
+
+ 1. get a mirror (retries 3 times to contact mirror.ctan.org)
+    - if no mirror found, use one of the backbone servers
+    - if it is an http server return it (no test is done)
+    - if it is a ftp server, continue
+ 2. if the ftp mirror is good, return it
+ 3. if the ftp mirror is bad, search for http mirror (5 times)
+ 4. if http mirror is found, return it (again, no test,)
+ 5. if no http mirror is found, return one of the backbone servers
+
+=cut
+
+sub give_ctan_mirror_base
+{
+  my @backbone = qw!http://www.ctan.org/tex-archive
+                    http://www.tex.ac.uk/tex-archive
+                    http://dante.ctan.org/tex-archive!;
+
+  # start by selecting a mirror and test its operationality
+  my $mirror = query_ctan_mirror();
+  if (!defined($mirror)) {
+    # three times calling mirror.ctan.org did not give anything useful,
+    # return one of the backbone servers
+    tlwarn("cannot contact mirror.ctan.org, returning a backbone server!\n");
+    return $backbone[int(rand($#backbone + 1))];
+  }
+
+  if ($mirror =~ m!^http://!) {  # if http mirror, assume good and return.
+    return $mirror;
+  }
+
+  # we are still here, so we got a ftp mirror from mirror.ctan.org
+  if (check_on_working_mirror($mirror)) {
+    return $mirror;  # ftp mirror is working, return.
+  }
+
+  # we are still here, so the ftp mirror failed, retry and hope for http.
+  # theory is that if one ftp fails, probably all ftp is broken.
+  my $max_mirror_trial = 5;
+  for (my $try = 1; $try <= $max_mirror_trial; $try++) {
+    my $m = query_ctan_mirror();
+    debug("querying mirror, got " . (defined($m) ? $m : "(nothing)") . "\n");
+    if (defined($m) && $m =~ m!^http://!) {
+      return $m;  # got http this time, assume ok.
+    }
+    # sleep to make mirror happy, but only if we are not ready to return
+    sleep(1) if $try < $max_mirror_trial;
+  }
+
+  # 5 times contacting the mirror service did not return a http server,
+  # use one of the backbone servers.
+  debug("no mirror found ... randomly selecting backbone\n");
+  return $backbone[int(rand($#backbone + 1))];
+}
+
 
 sub give_ctan_mirror
 {
-  return (give_ctan_mirror_base() . "/$TeXLiveServerPath");
+  return (give_ctan_mirror_base(@_) . "/$TeXLiveServerPath");
 }
 
 sub tlmd5 {
@@ -2970,11 +3282,154 @@ sub tlmd5 {
   if (-r $file) {
     open(FILE, $file) || die "open($file) failed: $!";
     binmode(FILE);
-    return Digest::MD5->new->addfile(*FILE)->hexdigest;
+    my $md5hash = Digest::MD5->new->addfile(*FILE)->hexdigest;
     close(FILE);
+    return $md5hash;
   } else {
     tlwarn("tlmd5, given file not readable: $file\n");
     return "";
+  }
+}
+
+#
+# compare_tlpobjs 
+# returns a hash
+#   $ret{'revision'} = "leftRev:rightRev"     if revision differ
+#   $ret{'removed'} = \[ list of files removed from A to B ]
+#   $ret{'added'} = \[ list of files added from A to B ]
+#
+sub compare_tlpobjs {
+  my ($tlpA, $tlpB) = @_;
+  my %ret;
+  my @rem;
+  my @add;
+
+  my $rA = $tlpA->revision;
+  my $rB = $tlpB->revision;
+  if ($rA != $rB) {
+    $ret{'revision'} = "$rA:$rB";
+  }
+  if ($tlpA->relocated) {
+    $tlpA->cancel_reloc_prefix;
+  }
+  if ($tlpB->relocated) {
+    $tlpB->cancel_reloc_prefix;
+  }
+  my @fA = $tlpA->all_files;
+  my @fB = $tlpB->all_files;
+  my %removed;
+  my %added;
+  for my $f (@fA) { $removed{$f} = 1; }
+  for my $f (@fB) { delete($removed{$f}); $added{$f} = 1; }
+  for my $f (@fA) { delete($added{$f}); }
+  @rem = sort keys %removed;
+  @add = sort keys %added;
+  $ret{'removed'} = \@rem if @rem;
+  $ret{'added'} = \@add if @add;
+  return %ret;
+}
+
+#
+# compare_tlpdbs
+# return several hashes
+# @{$ret{'removed_packages'}} = list of removed packages from A to B
+# @{$ret{'added_packages'}} = list of added packages from A to B
+# $ret{'different_packages'}->{$package} = output of compare_tlpobjs
+#
+sub compare_tlpdbs {
+  my ($tlpdbA, $tlpdbB, @add_ignored_packs) = @_;
+  my @ignored_packs = qw/00texlive.installer 00texlive.image/;
+  push @ignored_packs, @add_ignored_packs;
+
+  my @inAnotinB;
+  my @inBnotinA;
+  my %diffpacks;
+  my %do_compare;
+  my %ret;
+
+  for my $p ($tlpdbA->list_packages()) {
+    my $is_ignored = 0;
+    for my $ign (@ignored_packs) {
+      if (($p =~ m/^$ign$/) || ($p =~ m/^$ign\./)) {
+        $is_ignored = 1;
+        last;
+      }
+    }
+    next if $is_ignored;
+    my $tlpB = $tlpdbB->get_package($p);
+    if (!defined($tlpB)) {
+      push @inAnotinB, $p;
+    } else {
+      $do_compare{$p} = 1;
+    }
+  }
+  $ret{'removed_packages'} = \@inAnotinB if @inAnotinB;
+  
+  for my $p ($tlpdbB->list_packages()) {
+    my $is_ignored = 0;
+    for my $ign (@ignored_packs) {
+      if (($p =~ m/^$ign$/) || ($p =~ m/^$ign\./)) {
+        $is_ignored = 1;
+        last;
+      }
+    }
+    next if $is_ignored;
+    my $tlpA = $tlpdbA->get_package($p);
+    if (!defined($tlpA)) {
+      push @inBnotinA, $p;
+    } else {
+      $do_compare{$p} = 1;
+    }
+  }
+  $ret{'added_packages'} = \@inBnotinA if @inBnotinA;
+
+  for my $p (sort keys %do_compare) {
+    my $tlpA = $tlpdbA->get_package($p);
+    my $tlpB = $tlpdbB->get_package($p);
+    my %foo = compare_tlpobjs($tlpA, $tlpB);
+    if (keys %foo) {
+      # some diffs were found
+      $diffpacks{$p} = \%foo;
+    }
+  }
+  $ret{'different_packages'} = \%diffpacks if (keys %diffpacks);
+
+  return %ret;
+}
+
+sub report_tlpdb_differences {
+  my $rret = shift;
+  my %ret = %$rret;
+
+  if (defined($ret{'removed_packages'})) {
+    info ("removed packages from A to B:\n");
+    for my $f (@{$ret{'removed_packages'}}) {
+      info ("  $f\n");
+    }
+  }
+  if (defined($ret{'added_packages'})) {
+    info ("added packages from A to B:\n");
+    for my $f (@{$ret{'added_packages'}}) {
+      info ("  $f\n");
+    }
+  }
+  if (defined($ret{'different_packages'})) {
+    info ("different packages from A to B:\n");
+    for my $p (keys %{$ret{'different_packages'}}) {
+      info ("  $p\n");
+      for my $k (keys %{$ret{'different_packages'}->{$p}}) {
+        if ($k eq "revision") {
+          info("    revision differ: $ret{'different_packages'}->{$p}->{$k}\n");
+        } elsif ($k eq "removed" || $k eq "added") {
+          info("    $k files:\n");
+          for my $f (@{$ret{'different_packages'}->{$p}->{$k}}) {
+            info("      $f\n");
+          }
+        } else {
+          info("  unknown differ $k\n");
+        }
+      }
+    }
   }
 }
 
@@ -3039,9 +3494,10 @@ sub parse_line {
 
 
 
+=back
+=cut
 1;
 __END__
-=back
 
 =head1 SEE ALSO
 

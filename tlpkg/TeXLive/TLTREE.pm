@@ -1,13 +1,12 @@
-# $Id: TLTREE.pm 14553 2009-08-06 13:20:26Z preining $
+# $Id: TLTREE.pm 19481 2010-07-16 17:25:00Z karl $
 # TeXLive::TLTREE.pm - work with the tree of all files
-# Copyright 2007, 2008 Norbert Preining
-#
+# Copyright 2007, 2008, 2009, 2010 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLTREE;
 
-my $svnrev = '$Revision: 14553 $';
+my $svnrev = '$Revision: 19481 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -42,6 +41,11 @@ sub init_from_svn {
   my $self = shift;
   die "undefined svn root" if !defined($self->{'svnroot'});
   my @lines = `cd $self->{'svnroot'} && svn status -v`;
+  my $retval = $?;
+  if ($retval != 0) {
+    $retval /= 256 if $retval > 0;
+    tldie("TLTree: svn status -v returned $retval, stopping.\n");
+  }
   $self->_initialize_lines(@lines);
 }
 
@@ -56,8 +60,12 @@ sub init_from_statusfile {
 sub init_from_files {
   my $self = shift;
   my $svnroot = $self->{'svnroot'};
-  #my @lines = `find $svnroot ! -wholename '*/.svn*'`;
   my @lines = `find $svnroot`;
+  my $retval = $?;
+  if ($retval != 0) {
+    $retval /= 256 if $retval > 0;
+    tldie("TLTree: find $svnroot returned $retval, stopping.\n");
+  }
   @lines = grep(!/\/\.svn/ , @lines);
   @lines = map { s@^$svnroot@@; s@^/@@; "             1 1 dummy $_" } @lines;
   $self->{'revision'} = 1;
@@ -73,13 +81,14 @@ sub _initialize_lines {
   chdir($self->svnroot) || die "chdir($self->{svnroot}) failed: $!";
   foreach my $l (@lines) {
     chomp($l);
-    next if ($l =~ /^\?/);    # ignore files not under version control
-    if ($l =~ /^(.)(.)(.)(.)(.)(.)..\s*(\d+)\s+([\d\?]+)\s+([\w\?]+)\s+(.+)$/) {
+    next if $l =~ /^\?/;    # ignore files not under version control
+    if ($l =~ /^(.)(.)(.)(.)(.)(.)..\s*(\d+)\s+([\d\?]+)\s+([\w\?]+)\s+(.+)$/){
       $self->{'revision'} = $7 unless defined($self->{'revision'});
       my $lastchanged = ($8 eq "?" ? 1 : $8);
       my $entry = "$10";
       next if ($1 eq "D"); # ignore files which are removed
-      next if -d $entry;  # TODO: what to do with links???
+      next if -d $entry && ! -l $entry; # keep symlinks to dirs (bin/*/man),
+                                        # ignore normal dirs.
       # collect architectures, assuming nothing is in bin/ but arch subdirs.
       if ($entry =~ m,^bin/([^/]*)/,) {
         $archs{$1} = 1;
@@ -90,7 +99,7 @@ sub _initialize_lines {
       my $dn = TeXLive::TLUtils::dirname($entry);
       add_path_to_tree($self->{'_dirtree'}, split("[/\\\\]", $dn));
       push @{$self->{'_filesofdir'}{$dn}}, $fn;
-    } else {
+    } elsif ($l ne '             1 1 dummy ') {
       tlwarn("Ignoring svn status output line:\n    $l\n");
     }
   }
@@ -276,7 +285,7 @@ sub _get_files_matching_glob_pattern
       if ($dirpart =~ m,^bin/i386-cygwin,) {
         $w32_binext = "exe";  # cygwin has .exe but nothing else
       } else {
-        $w32_binext = "bat|cmd|exe|dll|texlua";
+        $w32_binext = "(exe|dll)(.manifest)?|texlua|bat|cmd";
       }
       ddebug("matching $f in $dirpart via glob $globline.($w32_binext)\n");
       if ($f =~ /^$basepart\.($w32_binext)$/) {

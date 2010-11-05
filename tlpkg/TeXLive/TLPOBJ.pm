@@ -1,6 +1,6 @@
-# $Id: TLPOBJ.pm 14553 2009-08-06 13:20:26Z preining $
+# $Id: TLPOBJ.pm 19893 2010-09-25 02:16:34Z preining $
 # TeXLive::TLPOBJ.pm - module for using tlpobj files
-# Copyright 2007, 2008, 2009 Norbert Preining
+# Copyright 2007, 2008, 2009, 2010 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
@@ -15,7 +15,7 @@ use TeXLive::TLTREE;
 our $_tmp;
 my $_containerdir;
 
-my $svnrev = '$Revision: 14553 $';
+my $svnrev = '$Revision: 19893 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -57,7 +57,6 @@ sub new {
 }
 
 
-
 sub copy {
   my $self = shift;
   my $bla = {};
@@ -114,6 +113,8 @@ sub from_fh {
         die("Continuation of $lastcmd not allowed, please fix tlpobj: line = $line!\n");
       }
     }
+    # remove white space at the end of a line
+    $line =~ s/\s*$//;
     if ($line =~ /^name\s*([-.\w]+)/o) {
       $name = "$1";
       $lastcmd = "name";
@@ -145,7 +146,7 @@ sub from_fh {
           }
         }
         next;
-      } elsif ($line =~ /^binfilescontinued\s+(.*)\s*/o) {
+      } elsif ($line =~ /^binfilescontinued\s+(.*)$/o) {
         push @{$self->{'binfiles'}{$arch}}, "$1";
         next;
       } elsif ($line =~ /^binfiles\s+/o) {
@@ -167,7 +168,15 @@ sub from_fh {
         }
         $lastcmd = "binfiles";
         next;
-      } elsif ($line =~ /^longdesc\s+(.*)\s*/o) {
+      } elsif ($line eq "longdesc") {
+        if (defined($self->{'longdesc'})) {
+          $self->{'longdesc'} .= " ";
+        } else {
+          $self->{'longdesc'} = "";
+        }
+        $lastcmd = "longdesc";
+        next;
+      } elsif ($line =~ /^longdesc\s+(.*)$/o) {
         if (defined($self->{'longdesc'})) {
           $self->{'longdesc'} .= " $1";
         } else {
@@ -175,7 +184,7 @@ sub from_fh {
         }
         $lastcmd = "longdesc";
         next;
-      } elsif ($line =~ /^category\s+(.*)\s*/o) {
+      } elsif ($line =~ /^category\s+(.*)$/o) {
         $self->{'category'} = "$1";
         $lastcmd = "category";
         if ($self->{'category'} !~ /^$CategoriesRegexp/o) {
@@ -183,39 +192,39 @@ sub from_fh {
             . $self->name . " found.\nPlease update texlive.infra.\n");
         }
         next;
-      } elsif ($line =~ /^relocated\s+([01])\s*/o) {
+      } elsif ($line =~ /^relocated\s+([01])$/o) {
         $self->relocated("$1");
         $lastcmd = "relocated";
         next;
-      } elsif ($line =~ /^revision\s+(.*)\s*/o) {
+      } elsif ($line =~ /^revision\s+(.*)$/o) {
         $self->{'revision'} = "$1";
         $lastcmd = "revision";
         next;
-      } elsif ($line =~ /^containersize\s+([0-9]+)\s*/o) {
+      } elsif ($line =~ /^containersize\s+([0-9]+)$/o) {
         $self->containersize("$1");
         $lastcmd = "containersize";
         next;
-      } elsif ($line =~ /^srccontainersize\s+([0-9]+)\s*/o) {
+      } elsif ($line =~ /^srccontainersize\s+([0-9]+)$/o) {
         $self->srccontainersize("$1");
         $lastcmd = "srccontainersize";
         next;
-      } elsif ($line =~ /^doccontainersize\s+([0-9]+)\s*/o) {
+      } elsif ($line =~ /^doccontainersize\s+([0-9]+)$/o) {
         $self->doccontainersize("$1");
         $lastcmd = "doccontainersize";
         next;
-      } elsif ($line =~ /^containermd5\s+([a-f0-9]+)\s*/o) {
+      } elsif ($line =~ /^containermd5\s+([a-f0-9]+)$/o) {
         $self->containermd5("$1");
         $lastcmd = "containermd5";
         next;
-      } elsif ($line =~ /^srccontainermd5\s+([a-f0-9]+)\s*/o) {
+      } elsif ($line =~ /^srccontainermd5\s+([a-f0-9]+)$/o) {
         $self->srccontainermd5("$1");
         $lastcmd = "srccontainermd5";
         next;
-      } elsif ($line =~ /^doccontainermd5\s+([a-f0-9]+)\s*/o) {
+      } elsif ($line =~ /^doccontainermd5\s+([a-f0-9]+)$/o) {
         $self->doccontainermd5("$1");
         $lastcmd = "doccontainermd5";
         next;
-      } elsif ($line =~ /^catalogue\s+(.*)\s*/o) {
+      } elsif ($line =~ /^catalogue\s+(.*)$/o) {
         $self->catalogue("$1");
         $lastcmd = "catalogue";
         next;
@@ -236,23 +245,27 @@ sub from_fh {
           $self->{"${type}size"} = $size;
         }
         next;
-      } elsif ($line =~ /^execute(continued)?\s*(.*)\s*/o) {
+      } elsif ($line =~ /^execute(continued)?\s*(.*)$/o) {
         push @{$self->{'executes'}}, "$2" unless "$2" eq "";
         $lastcmd = "execute";
         next;
-      } elsif ($line =~ /^postaction(continued)?\s*(.*)\s*/o) {
+      } elsif ($line =~ /^postaction(continued)?\s*(.*)$/o) {
         push @{$self->{'postactions'}}, "$2" unless "$2" eq "";
         $lastcmd = "postaction";
         next;
-      } elsif ($line =~ /^depend(continued)?\s*(.*)\s*/o) {
+      } elsif ($line =~ /^depend(continued)?\s*(.*)$/o) {
         push @{$self->{'depends'}}, "$2" unless "$2" eq "";
         $lastcmd = "depend";
         next;
-      } elsif ($line =~ /^catalogue-([^\s]+)\s+(.*)\s*/o) {
+      } elsif ($line =~ /^catalogue-([^\s]+)\s+(.*)$/o) {
         $self->{'cataloguedata'}{$1} = "$2";
       } elsif ($line =~ /^catalogue-([^\s]+)\s*/o) {
         1; # ignore e.g. catalogue-ctan without parameter
-      } elsif ($line =~ /^shortdesc\s+(.*)\s*/o) {
+      } elsif ($line eq "shortdesc") {
+        $self->{'shortdesc'} .= " ";
+        $lastcmd = "shortdesc";
+        next;
+      } elsif ($line =~ /^shortdesc\s+(.*)$/o) { # shortdesc <real text>
         $self->{'shortdesc'} .= "$1";
         $lastcmd = "shortdesc";
         next;
@@ -332,9 +345,10 @@ sub writeout {
   # ugly hack to get rid of use FileHandle; see man perlform
   #format_name $fd "multilineformat";
   select((select($fd),$~ = "multilineformat")[0]);
+  $fd->format_lines_per_page (99999); # no pages in this format
   if (defined($self->{'longdesc'})) {
     $_tmp = "$self->{'longdesc'}";
-    write $fd;
+    write $fd;  # use that multilineformat
   }
   if (defined($self->{'depends'})) {
     foreach (@{$self->{'depends'}}) {
@@ -467,6 +481,14 @@ sub cancel_reloc_prefix {
   my @srcfiles = $self->srcfiles;
   for (@srcfiles) { s:^$RelocPrefix/:$RelocTree/:; }
   $self->srcfiles(@srcfiles);
+  # docfiledata needs to be adapted too
+  my $data = $self->docfiledata;
+  my %newdata;
+  while (my ($k, $v) = each %$data) {
+    $k =~ s:^$RelocPrefix/:$RelocTree/:;
+    $newdata{$k} = $v;
+  }
+  $self->docfiledata(%newdata);
   # if there are bin files they have definitely NOT the
   # texmf-dist prefix, so we cannot cancel it anyway
 }
@@ -482,6 +504,14 @@ sub cancel_common_texmf_tree {
   my @srcfiles = $self->srcfiles;
   for (@srcfiles) { s:^$RelocTree/:$RelocPrefix/:; }
   $self->srcfiles(@srcfiles);
+  # docfiledata needs to be adapted too
+  my $data = $self->docfiledata;
+  my %newdata;
+  while (my ($k, $v) = each %$data) {
+    $k =~ s:^$RelocTree/:$RelocPrefix/:;
+    $newdata{$k} = $v;
+  }
+  $self->docfiledata(%newdata);
   # if there are bin files they have definitely NOT the
   # texmf-dist prefix, so we cannot cancel it anyway
 }
@@ -531,8 +561,8 @@ sub make_container {
            . "relative generation not allowed");
     }
     if ($tltree ne $RelocTree) {
-      die ("$0: building $pkg container relocatable but the comon prefix"
-           . "is not $RelocTree");
+      die ("$0: building $containername container relocatable but the common"
+           . " prefix is not $RelocTree");
     } 
     s,^$RelocTree/,, foreach @files;
   }
@@ -547,8 +577,12 @@ sub make_container {
   chdir($instroot);
   # in the relative case we have to chdir to the respective tltree
   # and put the tlpobj into the root!
+  my $removetlpkgdir = 0;
   if ($relative) {
     chdir("./$tltree");
+    # in the relocatable case we will probably create the tlpkg dir
+    # in texmf-dist/tlpkg and want to remove it afterwards.
+    $removetlpkgdir = 1;
     # we don't need to change the $tlpobjdir because we put it in
     # all cases into tlpkg/tlpobj
     #$tlpobjdir = "./tlpkg/tlpobj";
@@ -690,6 +724,7 @@ sub make_container {
   unlink("$tlpobjdir/$self->{'name'}.tlpobj");
   unlink($tartempfile) if $tartempfile;
   rmdir($tlpobjdir) if $removetlpobjdir;
+  rmdir($InfraLocation) if $removetlpkgdir;
   xchdir($cwd);
 
   debug(" done $containername, size $size, $md5\n");
@@ -725,32 +760,46 @@ sub total_size {
 }
 
 
-sub update_from_catalogue {
+# update_from_catalogue($tlc)
+# Update the current TLPOBJ object with the information from the
+# corresponding entry in C<$tlc->entries>.
+#
+sub update_from_catalogue
+{
   my ($self, $tlc) = @_;
   my $tlcname = $self->name;
   if (defined($self->catalogue)) {
     $tlcname = $self->catalogue;
   } elsif ($tlcname =~ m/^bin-(.*)$/) {
-    my $shortname = $1;
     if (!defined($tlc->entries->{$tlcname})) {
       $tlcname = $1;
     }
   }
+  $tlcname = lc($tlcname);
   if (defined($tlc->entries->{$tlcname})) {
     my $entry = $tlc->entries->{$tlcname};
+    # Record the id of the catalogue entry if it's found due to 
+    # quest4texlive.
+    if ($entry->entry->{'id'} ne $tlcname) {
+      $self->catalogue($entry->entry->{'id'});
+    }
     if (defined($entry->entry->{'date'})) {
       my $foo = $entry->entry->{'date'};
       $foo =~ s/^.Date: //;
-      $foo =~ s/ \(.*\) \$$//;
+      # trying to extract the interesting part of a subversion date
+      # keyword expansion here, e.g.,
+      # $Date: 2010-09-25 04:16:34 +0200 (Sat, 25 Sep 2010) $
+      # ->2007-08-15 19:43:35 +0100
+      $foo =~ s/ \(.*\)( *\$ *)$//;  # maybe nothing after parens
       $self->cataloguedata->{'date'} = $foo;
     }
     if (defined($entry->license)) {
       $self->cataloguedata->{'license'} = $entry->license;
     }
-    if (defined($entry->version) && ($entry->version ne "")) {
+    if (defined($entry->version) && $entry->version ne "") {
       $self->cataloguedata->{'version'} = $entry->version;
     }
-    if (defined($entry->ctan)) {
+    if (defined($entry->ctan) && $entry->ctan ne "") {
       $self->cataloguedata->{'ctan'} = $entry->ctan;
     }
     #if (defined($entry->texlive)) {
@@ -759,10 +808,10 @@ sub update_from_catalogue {
     #if (defined($entry->miktex)) {
     #  $self->cataloguedata->{'miktex'} = $entry->miktex;
     #}
-    if (defined($entry->caption)) {
+    if (defined($entry->caption) && $entry->caption ne "") {
       $self->{'shortdesc'} = $entry->caption unless $self->{'shortdesc'};
     }
-    if (defined($entry->description)) {
+    if (defined($entry->description) && $entry->description ne "") {
       $self->{'longdesc'} = $entry->description unless $self->{'longdesc'};
     }
     #
@@ -891,7 +940,7 @@ sub contains_file {
   if ($fn =~ m!/!) {
     return(grep(m!$fn$!, $self->all_files));
   } else {
-    return(grep(m!/$fn$!,$self->all_files));
+    return(grep(m!(^|/)$fn$!,$self->all_files));
   }
 }
 
@@ -920,6 +969,7 @@ sub allbinfiles {
 
 sub format_definitions {
   my $self = shift;
+  my $pkg = $self->name;
   my @ret;
   for my $e ($self->executes) {
     if ($e =~ m/AddFormat\s+(.*)\s*/) {
@@ -938,6 +988,7 @@ sub format_definitions {
 #
 sub fmtutil_cnf_lines {
   my $obj = shift;
+  my @disabled = @_;
   my @fmtlines = ();
   my $first = 1;
   my $pkg = $obj->name;
@@ -952,6 +1003,7 @@ sub fmtutil_cnf_lines {
         $first = 0;
       }
       my $mode = ($r{"mode"} ? "" : "#! ");
+      $mode = "#! " if TeXLive::TLUtils::member ($r{'name'}, @disabled);
       push @fmtlines, "$mode$r{'name'} $r{'engine'} $r{'patterns'} $r{'options'}\n";
     }
   }
@@ -961,6 +1013,7 @@ sub fmtutil_cnf_lines {
 
 sub updmap_cfg_lines {
   my $obj = shift;
+  my @disabled = @_;
   my %maps;
   foreach my $e ($obj->executes) {
     if ($e =~ m/addMap (.*)$/) {
@@ -972,6 +1025,7 @@ sub updmap_cfg_lines {
   }
   my @updmaplines;
   foreach (sort keys %maps) {
+    next if TeXLive::TLUtils::member($_, @disabled);
     if ($maps{$_} == 2) {
       push @updmaplines, "MixedMap $_\n";
     } else {
@@ -983,43 +1037,74 @@ sub updmap_cfg_lines {
 
 
 sub language_dat_lines {
+  my $self = shift;
+  local @disabled = @_;  # we use @disabled in the nested sub
+  my @lines = $self->_parse_hyphen_execute(\&make_dat_lines, 'dat');
+  return @lines;
+
   sub make_dat_lines {
-    my ($name, $lhm, $rhm, $file, @syn) = @_;
+    my ($name, $lhm, $rhm, $file, $syn) = @_;
     my @ret;
+    return if TeXLive::TLUtils::member($name, @disabled);
     push @ret, "$name $file\n";
-    foreach (@syn) {
+    foreach (@$syn) {
       push @ret, "=$_\n";
     }
-    return(@ret);
+    return @ret;
   }
-  my $self = shift;
-  my @lines = $self->_parse_hyphen_execute(\&make_dat_lines);
-  return(@lines);
 }
 
 
 sub language_def_lines {
+  my $self = shift;
+  local @disabled = @_;  # we use @disabled in the nested sub
+  my @lines = $self->_parse_hyphen_execute(\&make_def_lines, 'def');
+  return @lines;
+
   sub make_def_lines {
-    my ($name, $lhm, $rhm, $file, @syn) = @_;
+    my ($name, $lhm, $rhm, $file, $syn) = @_;
+    return if TeXLive::TLUtils::member($name, @disabled);
     my $exc = "";
     my @ret;
     push @ret, "\\addlanguage\{$name\}\{$file\}\{$exc\}\{$lhm\}\{$rhm\}\n";
-    foreach (@syn) {
+    foreach (@$syn) {
       # synonyms in language.def ???
       push @ret, "\\addlanguage\{$_\}\{$file\}\{$exc\}\{$lhm\}\{$rhm\}\n";
       #debug("Ignoring synonym $_ for $name when creating language.def\n");
     }
-    return(@ret);
+    return @ret;
   }
-  my $self = shift;
-  my @lines = $self->_parse_hyphen_execute(\&make_def_lines);
-  return(@lines);
 }
-    
+
+
+sub language_lua_lines {
+  my $self = shift;
+  local @disabled = @_;  # we use @disabled in the nested sub
+  my @lines = $self->_parse_hyphen_execute(\&make_lua_lines, 'lua', '--');
+  return @lines;
+
+  sub make_lua_lines {
+    my ($name, $lhm, $rhm, $file, $syn, $patt, $hyph, $special) = @_;
+    return if TeXLive::TLUtils::member($name, @disabled);
+    my @syn = (@$syn); # avoid modifying the original
+    map { $_ = "'$_'" } @syn;
+    my @ret;
+    push @ret, "['$name'] = {", "\tloader = '$file',",
+               "\tlefthyphenmin = $lhm,", "\trighthyphenmin = $rhm,",
+               "\tsynonyms = { " . join(', ', @syn) . " },";
+    push @ret, "\tpatterns = '$patt'," if defined $patt;
+    push @ret, "\thyphenation = '$hyph'," if defined $hyph;
+    push @ret, "\tspecial = '$special'," if defined $special;
+    push @ret, '},';
+    map { $_ = "\t$_\n" } @ret;
+    return @ret;
+  }
+}
 
 
 sub _parse_hyphen_execute {
-  my ($obj, $coderef) = @_;
+  my ($obj, $coderef, $db, $cc) = @_;
+  $cc ||= '%'; # default comment char
   my @langlines = ();
   my $pkg = $obj->name;
   my $first = 1;
@@ -1029,14 +1114,20 @@ sub _parse_hyphen_execute {
       if (defined($r{"error"})) {
         die "$r{'error'}, package $pkg, execute $e";
       }
+      if (not TeXLive::TLUtils::member($db, @{$r{"databases"}})) {
+        next;
+      }
       if ($first) {
-        push @langlines, "% from $pkg:\n";
+        push @langlines, "$cc from $pkg:\n";
         $first = 0;
       }
-      my @syns;
-      @syns = @{$r{"synonyms"}} if (defined($r{"synonyms"}));
-      my @foo = &$coderef ($r{"name"}, $r{"lefthyphenmin"}, 
-                           $r{"righthyphenmin"}, $r{"file"}, @syns);
+      if ($r{"comment"}) {
+          push @langlines, "$cc $r{comment}\n";
+      }
+      my @foo = &$coderef ($r{"name"}, $r{"lefthyphenmin"},
+                           $r{"righthyphenmin"}, $r{"file"}, $r{"synonyms"},
+                           $r{"file_patterns"}, $r{"file_exceptions"},
+                           $r{"luaspecial"});
       push @langlines, @foo;
     }
   }
@@ -1593,6 +1684,11 @@ lines for language.dat that can be generated from the tlpobj
 
 The function C<language_def_lines> returns the list of all
 lines for language.def that can be generated from the tlpobj.
+
+=item C<< $tlpobj->language_lua_lines >>
+
+The function C<language_lua_lines> returns the list of all
+lines for language.dat.lua that can be generated from the tlpobj.
 
 =back
 

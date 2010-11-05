@@ -1,12 +1,12 @@
-# $Id: TLConfig.pm 14553 2009-08-06 13:20:26Z preining $
+# $Id: TLConfig.pm 18682 2010-06-01 22:17:30Z karl $
 # TeXLive::TLConfig.pm - module exporting configuration stuff
-# Copyright 2007, 2008, 2009 Norbert Preining
+# Copyright 2007, 2008, 2009, 2010 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLConfig;
 
-my $svnrev = '$Revision: 14553 $';
+my $svnrev = '$Revision: 18682 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -33,6 +33,7 @@ BEGIN {
     $DefaultContainerExtension
     $InfraLocation
     $DatabaseName
+    $PackageBackupDir 
     $BlockSize
     $Archive
     $TeXLiveServerURL
@@ -51,8 +52,8 @@ BEGIN {
 }
 
 # the year of our release, will be used in the location of the
-# network packges, and in menu names, and probably many other places
-$ReleaseYear = 2009;
+# network packages, and in menu names, and probably many other places
+$ReleaseYear = 2010;
 
 # Meta Categories do not ship files, but call only for other packages
 our @MetaCategories = qw/Collection Scheme/;
@@ -74,11 +75,10 @@ our $DefaultCategory = "Package";
 our $InfraLocation = "tlpkg";
 our $DatabaseName = "texlive.tlpdb";
 
-our $BlockSize = 4096;
+# location of backups in default autobackup setting (under tlpkg)
+our $PackageBackupDir = "$InfraLocation/backups";
 
-# the way we package things on the web
-our $DefaultContainerFormat = "xz";
-our $DefaultContainerExtension = "tar.$DefaultContainerFormat";
+our $BlockSize = 4096;
 
 our $Archive = "archive";
 our $TeXLiveServerURL = "http://mirror.ctan.org";
@@ -87,98 +87,88 @@ our $TeXLiveServerURL = "http://mirror.ctan.org";
 # our $TeXLiveServerPath = "systems/texlive/tlnet/$ReleaseYear";
 our $TeXLiveServerPath = "systems/texlive/tlnet";
 our $TeXLiveURL = "$TeXLiveServerURL/$TeXLiveServerPath";
+
+# Relocatable packages.
 our $RelocTree = "texmf-dist";
 our $RelocPrefix = "RELOC";
 
 our @CriticalPackagesList = qw/texlive.infra/;
 our $CriticalPackagesRegexp = '^(texlive\.infra)';
-if ($^O=~/^MSWin(32|64)$/i) {
-  push(@CriticalPackagesList, "tlperl.win32");
+if ($^O =~ /^MSWin(32|64)$/i) {
+  push (@CriticalPackagesList, "tlperl.win32");
   $CriticalPackagesRegexp = '^(texlive\.infra|tlperl\.win32$)';
 }
 
-#
-# stuff formerly set in 00texlive.config
-#
+# the way we package things on the web
+our $DefaultContainerFormat = "xz";
+our $DefaultContainerExtension = "tar.$DefaultContainerFormat";
+
+# archive (not user) settings.
 our %TLPDBConfigs = (
   "container_split_src_files" => 1,
   "container_split_doc_files" => 1,
   "container_format" => $DefaultContainerFormat,
-  "release" => $ReleaseYear );
+  "release" => $ReleaseYear,
+);
 
-#
 # definition of the option strings and their value types 
 # possible types are:
 # - u: url
 # - b: boolean, saved as 0/1
 # - p: path (local path)
-# - n: naturnal number
+# - n: natural number
 #      it allows n:[a]..[b]
 #         if a is empty start at -infty
 #         if b is empty end at +infty
 #      so "n:.." is equivalent to "n"
 
-# WARNING: keep these in sync!
-#
 # $TLPDBOptions{"option"}->[0] --> type
 #                        ->[1] --> default value
 #                        ->[2] --> tlmgr name
 #                        ->[3] --> tlmgr description
+# the "option" is the value in the TLPDB
 
 our %TLPDBOptions = (
-  "location" =>
-    [ "u", "__MASTER__",
-      "location", 
-      "Default installation location" ],
-  "create_formats" =>
-    [ "b", 1,
-      "formats",  
-      "Create formats on installation" ],
-  "desktop_integration" =>
-    [ "b", 1,
-      "desktop_integration",
-      "Create shortcuts (menu and desktop) in postinst" ],
-  "file_assocs" =>
-    [ "n:0..2", 1,
-      "fileassocs",
-      "Change file associations in postinst" ],
-  "post_code" =>
-    [ "b", 1,
-      "postcode",
-      "Run postinst code blobs" ],
-  "sys_bin" =>
-    [ "p", "/usr/local/bin",
-      "sys_bin",
-      "Destination for symlinks for binaries" ],
-  "sys_man" =>
-    [ "p", "/usr/local/man",
-      "sys_man",
-      "Destination for symlinks for man pages" ],
-  "sys_info" =>
-    [ "p", "/usr/local/info",
-      "sys_info",
-      "Destination for symlinks for info docs" ],
-  "install_docfiles" =>
-    [ "b", 1,
-      "docfiles",
-      "Install documentation files" ],
-  "install_srcfiles" =>
-    [ "b", 1,
-      "srcfiles",
-      "Install source files" ],
-  "w32_multi_user" =>
-    [ "b", 1,
-      "multiuser",
-      "Install for shortcuts/menu items for all users (w32)" ],
   "autobackup" =>
-    [ "n:-1..", 0,
-      "autobackup",
+    [ "n:-1..", 1, "autobackup",
       "Number of backups to keep" ],
   "backupdir" =>
-    [ "p", "",
-      "backupdir",
+    [ "p", $PackageBackupDir, "backupdir",
       "Directory for backups" ],
-  );
+  "create_formats" =>
+    [ "b", 1, "formats",  
+      "Create formats on installation" ],
+  "desktop_integration" =>
+    [ "b", 1, "desktop_integration",
+      "Create shortcuts (menu and desktop) in postinst" ],
+  "file_assocs" =>
+    [ "n:0..2", 1, "fileassocs",
+      "Change file associations in postinst" ],
+  "install_docfiles" =>
+    [ "b", 1, "docfiles",
+      "Install documentation files" ],
+  "install_srcfiles" =>
+    [ "b", 1, "srcfiles",
+      "Install source files" ],
+  "location" =>
+    [ "u", "__MASTER__", "repository", 
+      "Default package repository" ],
+  "post_code" =>
+    [ "b", 1, "postcode",
+      "Run postinst code blobs" ],
+  "sys_bin" =>
+    [ "p", "/usr/local/bin", "sys_bin",
+      "Destination for symlinks for binaries" ],
+  "sys_info" =>
+    [ "p", "/usr/local/info", "sys_info",
+      "Destination for symlinks for info docs" ],
+  "sys_man" =>
+    [ "p", "/usr/local/man", "sys_man",
+      "Destination for symlinks for man pages" ],
+  "w32_multi_user" =>
+    [ "b", 0, "multiuser",
+      "Install for shortcuts/menu items for all users (w32)" ],
+);
 
 
 our %TLPDBSettings = (
@@ -253,26 +243,24 @@ These values specify where to find packages.
 =item C<$TeXLive::TLConfig::TeXLiveServerURL>
 =item C<$TeXLive::TLConfig::TeXLiveServerPath>
 
-C<TeXLiveURL> is concatencated from these values, with a string between.
+C<TeXLiveURL> is concatenated from these values, with a string between.
 The defaults are respectively, C<http://mirror.ctan.org> and
-C<systems/texlive/tlnet/>I<rel>, where I<rel> specifies the TeX Live
-release version, such as C<tldev> or C<2008>.
+C<systems/texlive/tlnet/>.
 
 =item C<@TeXLive::TLConfig::CriticalPackagesList>
 =item C<@TeXLive::TLConfig::CriticalPackagesRegexp>
 
-A list of all those packages which we do not update regularly
-since they are too central, currently only texlive.infra (and tlperl.win32
-for Windows).
+A list of all those packages which we do not update regularly since they
+are too central, currently texlive.infra and (for Windows) tlperl.win32.
 
 =item C<$TeXLive::TLConfig::RelocTree>
 
-the texmf-tree name that can be relocated, defaults to "texmf-dist"
+The texmf-tree name that can be relocated, defaults to C<texmf-dist>.
 
 =item C<$TeXLive::TLConfig::RelocPrefix>
 
-The string that replaces the RelocTree in the tlpdb if a package is
-reloaced, defaults to "RELOC".
+The string that replaces the C<RelocTree> in the tlpdb if a package is
+relocated, defaults to C<RELOC>".
 
 =back
 

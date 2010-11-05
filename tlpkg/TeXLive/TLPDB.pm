@@ -1,13 +1,12 @@
-# $Id: TLPDB.pm 14553 2009-08-06 13:20:26Z preining $
+# $Id: TLPDB.pm 18756 2010-06-05 16:31:31Z preining $
 # TeXLive::TLPDB.pm - module for using tlpdb files
-# Copyright 2007, 2008 Norbert Preining
-#
+# Copyright 2007, 2008, 2009, 2010 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLPDB;
 
-my $svnrev = '$Revision: 14553 $';
+my $svnrev = '$Revision: 18756 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -53,12 +52,14 @@ C<TeXLive::TLPDB> -- A database of TeX Live Packages
   $tlpdb->fmtutil_cnf_lines;
   $tlpdb->language_dat_lines;
   $tlpdb->language_def_lines;
+  $tlpdb->language_lua_lines;
   $tlpdb->package_revision("packagename");
   $tlpdb->location;
   $tlpdb->config_src_container;
   $tlpdb->config_doc_container;
   $tlpdb->config_container_format;
   $tlpdb->config_release;
+  $tlpdb->config_maxrelease;
   $tlpdb->config_revision;
   $tlpdb->options;
   $tlpdb->option($key, [$value]);
@@ -291,9 +292,14 @@ sub from_file {
       $found++;
     }
   } until (!$ret);
-  tlwarn("unusable location $path, could not load any packages\n") if (!$found);
+  if (! $found) {
+    debug("$0: Could not load packages from\n");
+    debug("  $path\n");
+  }
+
   # remove the un-xz-ed tlpdb file from temp dir
   # THAT IS RACY!!! we should fix that in some better way with tempfile
+  close($retfh);
   unlink($tlpdbfile) if $tlpdbfile;
   return($found);
 }
@@ -332,9 +338,13 @@ sub save {
   my $self = shift;
   my $path = $self->location;
   mkdirhier(dirname($path));
-  open(FOO, ">$path") || die "$0: open(>$path) failed: $!";
+  my $tmppath = "$path.tmp";
+  open(FOO, ">$tmppath") || die "$0: open(>$tmppath) failed: $!";
   $self->writeout(\*FOO);
   close(FOO);
+  # if we managed that one, we move it over
+  die ("rename $tmppath to $path failed: $!")
+    unless rename($tmppath, $path);
 }
 
 =pod
@@ -473,8 +483,9 @@ mathematicians)
 If the very first argument is "-only-arch" then it expands only dependencies
 of the form .ARCH.
 
-If the very first argument is "-no-collections" then dependencies of 
-collections onto collections are ignored.
+If the very first argument is "-no-collections" then dependencies between
+"same-level" packages (scheme onto scheme, collection onto collection,
+package onto package) are ignored.
 
 =cut
 
@@ -515,10 +526,15 @@ sub expand_dependencies {
         ddebug("checking $p_dep in $p\n");
         my $tlpdd = $self->get_package($p_dep);
         if (defined($tlpdd)) {
-          if ($tlpdd->category =~ m/$MetaCategoriesRegexp/) {
-            # we are taking a look at a dependency which is a collection
-            # or scheme, and if the option "-no-collections" is given
-            # we skip that one
+          # before we ignored all deps of schemes and colls if -no-collections
+          # was given, but this prohibited auto-install of new collections
+          # even if the scheme is updated.
+          # Now we supress only "same-level dependencies", so scheme -> scheme
+          # and collections -> collections and package -> package
+          # hoping that this works out better
+          # if ($tlpdd->category =~ m/$MetaCategoriesRegexp/) {
+          if ($tlpdd->category eq $pkg->category) {
+            # we ignore same-level dependencies if "-no-collections" is given
             ddebug("expand_deps: skipping $p_dep in $p due to -no-collections\n");
             next if $no_collections;
           }
@@ -912,6 +928,27 @@ sub config_release {
 
 =pod
 
+=item C<< $tlpdb->config_maxrelease >>
+
+Returns the currently allowed maximal release. See Options below.
+
+=cut
+
+sub config_maxrelease {
+  my $self = shift;
+  if (defined($self->{'tlps'}{'00texlive.config'})) {
+    foreach my $d ($self->{'tlps'}{'00texlive.config'}->depends) {
+      if ($d =~ m!^maxrelease/(.*)$!) {
+        return "$1";
+      }
+    }
+  }
+  return;
+}
+
+
+=pod
+
 =item C<< $tlpdb->config_revision >>
 
 Returns the currently set revision. See Options below.
@@ -1076,7 +1113,7 @@ sub option_pkg {
   if (@_) { $self->_set_value_pkg($pkg, "opt_", $key, shift); }
   my $ret = $self->_value_pkg($pkg, "opt_", $key);
   # special case for location == __MASTER__
-  if ($ret eq "__MASTER__" && $key eq "location") {
+  if (defined($ret) && $ret eq "__MASTER__" && $key eq "location") {
     return $self->root;
   }
   return $ret;
@@ -1110,7 +1147,7 @@ sub setting_pkg {
     if (defined $ret) {
       @ret = split(" ", $ret);
     } else {
-      tlwarn "TLPDB::setting: no $key, returning empty list ...\n";
+      tlwarn "TLPDB::setting_pkg: no $key, returning empty list ...\n";
       @ret = ();
     }
     return @ret;
@@ -1151,7 +1188,7 @@ sub reset_options {
 
 sub add_default_options {
   my $self = shift;
-  for my $k (keys %TeXLive::TLConfig::TLPDBOptions) {
+  for my $k (sort keys %TeXLive::TLConfig::TLPDBOptions) {
     # if the option is not set already, do set it to defaults
     if (! $self->option($k) ) {
       $self->option($k, $TeXLive::TLConfig::TLPDBOptions{$k}->[1]);
@@ -1202,7 +1239,6 @@ sub settings {
 This function returns a list of references to hashes where each hash
 represents a parsed AddFormat line.
 
-
 =cut
 
 sub format_definitions {
@@ -1221,6 +1257,9 @@ sub format_definitions {
 The function C<fmtutil_cnf_lines> returns the list of a fmtutil.cnf file
 containing only those formats present in the installation.
 
+Every format listed in the tlpdb but listed in the arguments
+will not be included in the list of lines returned.
+
 =cut
 sub fmtutil_cnf_lines {
   my $self = shift;
@@ -1228,15 +1267,18 @@ sub fmtutil_cnf_lines {
   foreach my $p ($self->list_packages) {
     my $obj = $self->get_package ($p);
     die "$0: No TeX Live package named $p, strange" if ! $obj;
-    push @lines, $obj->fmtutil_cnf_lines;
+    push @lines, $obj->fmtutil_cnf_lines(@_);
   }
   return(@lines);
 }
 
-=item C<< $tlpdb->updmap_cfg_lines >>
+=item C<< $tlpdb->updmap_cfg_lines ( [@disabled_maps] ) >>
 
 The function C<updmap_cfg_lines> returns the list of a updmap.cfg file
 containing only those maps present in the installation.
+
+A map file mentioned in the tlpdb but listed in the arguments will not 
+be included in the list of lines returned.
 
 =cut
 sub updmap_cfg_lines {
@@ -1245,15 +1287,18 @@ sub updmap_cfg_lines {
   foreach my $p ($self->list_packages) {
     my $obj = $self->get_package ($p);
     die "$0: No TeX Live package named $p, strange" if ! $obj;
-    push @lines, $obj->updmap_cfg_lines;
+    push @lines, $obj->updmap_cfg_lines(@_);
   }
   return(@lines);
 }
 
-=item C<< $tlpdb->language_dat_lines >>
+=item C<< $tlpdb->language_dat_lines ( [@disabled_hyphen_names] ) >>
 
 The function C<language_dat_lines> returns the list of all
 lines for language.dat that can be generated from the tlpdb.
+
+Every hyphenation pattern listed in the tlpdb but listed in the arguments
+will not be included in the list of lines returned.
 
 =cut
 
@@ -1263,15 +1308,18 @@ sub language_dat_lines {
   foreach my $p ($self->list_packages) {
     my $obj = $self->get_package ($p);
     die "$0: No TeX Live package named $p, strange" if ! $obj;
-    push @lines, $obj->language_dat_lines;
+    push @lines, $obj->language_dat_lines(@_);
   }
   return(@lines);
 }
 
-=item C<< $tlpdb->language_def_lines >>
+=item C<< $tlpdb->language_def_lines ( [@disabled_hyphen_names] ) >>
 
 The function C<language_def_lines> returns the list of all
 lines for language.def that can be generated from the tlpdb.
+
+Every hyphenation pattern listed in the tlpdb but listed in the arguments
+will not be included in the list of lines returned.
 
 =cut
 
@@ -1281,11 +1329,32 @@ sub language_def_lines {
   foreach my $p ($self->list_packages) {
     my $obj = $self->get_package ($p);
     die "$0: No TeX Live package named $p, strange" if ! $obj;
-    push @lines, $obj->language_def_lines;
+    push @lines, $obj->language_def_lines(@_);
   }
   return(@lines);
 }
-    
+
+=item C<< $tlpdb->language_lua_lines ( [@disabled_hyphen_names] ) >>
+
+The function C<language_lua_lines> returns the list of all
+lines for language.dat.lua that can be generated from the tlpdb.
+
+Every hyphenation pattern listed in the tlpdb but listed in the arguments
+will not be included in the list of lines returned.
+
+=cut
+
+sub language_lua_lines {
+  my $self = shift;
+  my @lines;
+  foreach my $p ($self->list_packages) {
+    my $obj = $self->get_package ($p);
+    die "$0: No TeX Live package named $p, strange" if ! $obj;
+    push @lines, $obj->language_lua_lines(@_);
+  }
+  return(@lines);
+}
+
 =back
 
 =pod

@@ -3,9 +3,11 @@ use 5.010;
 use warnings;
 use strict;
 my $TEXMFVAR = "/var/lib/texmf";
-use lib ('tlpkg', "$TEXMFVAR/arch/tlpkg");
+use lib ('tlpkg', "/var/lib/texmf/arch/tlpkg");
+# XXX: Why the line below raise a bug???
+#use lib ('tlpkg', "$TEXMFVAR/arch/tlpkg");
 use TeXLive::Arch;
-our $VERSION = "0.4.0";
+our $VERSION = "0.4.2";
 our $YEAR = "2010";
 
 use Getopt::Long; 
