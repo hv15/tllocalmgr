@@ -1,4 +1,4 @@
-# $Id: TLUtils.pm 19639 2010-09-10 14:57:40Z preining $
+# $Id: TLUtils.pm 20818 2010-12-21 04:35:03Z preining $
 # TeXLive::TLUtils.pm - the inevitable utilities for TeX Live.
 # Copyright 2007, 2008, 2009, 2010 Norbert Preining, Reinhard Kotucha
 # This file is licensed under the GNU General Public License version 2
@@ -6,7 +6,7 @@
 
 package TeXLive::TLUtils;
 
-my $svnrev = '$Revision: 19639 $';
+my $svnrev = '$Revision: 20818 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -2274,6 +2274,7 @@ sub download_file {
     $url = "$TeXLiveURL/$relpath";
   }
   if (defined($::tldownload_server) && $::tldownload_server->enabled) {
+    debug("persistent connection set up, trying to get file.\n");
     if (($ret = $::tldownload_server->get_file($url, $dest))) {
       debug("downloading file via permanent connection succeeded\n");
       return $ret;
@@ -2281,6 +2282,13 @@ sub download_file {
       tlwarn("permanent server connection set up, but downloading did not succeed!");
       tlwarn("Retrying with wget.\n");
     }
+  } else {
+    if (!defined($::tldownload_server)) {
+      debug("::tldownload_server not defined\n");
+    } else {
+      debug("::tldownload_server->enabled is not set\n");
+    }
+    debug("persistent connection not set up, using wget\n");
   }
   my $ret = _download_file($url, $dest, $wget);
   return($ret);
@@ -3132,7 +3140,14 @@ Set up to use persistent connections using LWP/TLDownload.
 sub setup_persistent_downloads
 {
   if ($TeXLive::TLDownload::net_lib_avail) {
-    return ($::tldownload_server = TeXLive::TLDownload->new);
+    debug("setting up persistent downloads succeeded!\n");
+    $::tldownload_server = TeXLive::TLDownload->new;
+    if (!defined($::tldownload_server)) {
+      debug("TLUtils:setup_persistent_downloads: ::tldownload_server undefined\n");
+    } else {
+      debug("TLUtils:setup_persistent_downloads: succeeded in getting ::tldownload_server\n");
+    }
+    return ($::tldownload_server);
   }
   return 0;
 }
@@ -3164,6 +3179,14 @@ sub query_ctan_mirror
   my $cmd = "$wget $mirror --timeout=60 -O "
             . (win32() ? "nul" : "/dev/null") . " 2>&1";
 
+  #
+  # since we are reading the output of wget to find a mirror
+  # we have to make sure that the locale is unset
+  my $saved_lcall;
+  if (defined($ENV{'LC_ALL'})) {
+    $saved_lcall = $ENV{'LC_ALL'};
+  }
+  $ENV{'LC_ALL'} = "C";
   # we try 3 times to get a mirror from mirror.ctan.org in case we have
   # bad luck with what gets returned.
   my $max_trial = 3;
@@ -3178,6 +3201,13 @@ sub query_ctan_mirror
       }
     }
     sleep(1);
+  }
+
+  # reset LC_ALL to undefined or the previous value
+  if (defined($saved_lcall)) {
+    $ENV{'LC_ALL'} = $saved_lcall;
+  } else {
+    delete($ENV{'LC_ALL'});
   }
 
   # we are still here, so three times we didn't get a mirror, give up 
