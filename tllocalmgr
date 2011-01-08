@@ -18,7 +18,7 @@ GetOptions( $opts,
 			'localsearch', #TODO
 			'location', #TODO ?
 			'mirror',
-			'nocolor', #TODO
+			'nocolor',
 			'help|h',
 			'version|v'
 		);
@@ -50,6 +50,7 @@ my $skipupdate = $opts->{'skipupdate'} || 0;
 my $forceupdate = $opts->{'forceupdate'} || 0;
 my $location = $opts->{'location'} || $ROOT;
 my $mirror = $opts->{'mirror'} || $CTANBASEURL;
+$ENV{ANSI_COLORS_DISABLED} = 1 if $opts->{'nocolor'} eq 1;
 my $localsearch = $opts->{'localsearch'} || 0;
 
 my $TLARCHIVE="$mirror/archive";
