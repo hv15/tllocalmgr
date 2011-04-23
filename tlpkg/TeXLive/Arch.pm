@@ -26,7 +26,6 @@ my @core_colls = qw/
   langspanish
   langenglish
   latex
-  latex3
   latexrecommended
   luatex
   mathextra
