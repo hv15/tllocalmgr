@@ -1,7 +1,5 @@
 #!/bin/bash
+
 source PKGBUILD || exit 1
-cd ..
-tar cJf $pkgname-$pkgver.tar.xz $pkgname/{tllocalmgr,tlpkg}
-mv $pkgname-$pkgver.tar.xz $pkgname/
-cd $pkgname
-echo "done"
+git archive --prefix=$pkgname-$pkgver/ v$pkgver | gzip > $pkgname-$pkgver.tar.gz
+
