@@ -1,0 +1,4 @@
+.git*       export-ignore
+PKGBUILD    export-ignore
+maketarball export-ignore
+
