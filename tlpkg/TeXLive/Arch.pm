@@ -14,8 +14,8 @@ my $SKIPPATTERN = qr{^(?:collection|hyphen)-};
 my @core_colls = qw/
   basic
   context
-  genericrecommended
   fontsrecommended
+  genericrecommended
   langczechslovak
   langdutch
   langfrench
