@@ -1,12 +1,12 @@
-# $Id: TLConfig.pm 18682 2010-06-01 22:17:30Z karl $
-# TeXLive::TLConfig.pm - module exporting configuration stuff
-# Copyright 2007, 2008, 2009, 2010 Norbert Preining
+# $Id: TLConfig.pm 22695 2011-05-30 23:06:34Z karl $
+# TeXLive::TLConfig.pm - module exporting configuration values
+# Copyright 2007, 2008, 2009, 2010, 2011 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLConfig;
 
-my $svnrev = '$Revision: 18682 $';
+my $svnrev = '$Revision: 22695 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -52,10 +52,14 @@ BEGIN {
 }
 
 # the year of our release, will be used in the location of the
-# network packages, and in menu names, and probably many other places
-$ReleaseYear = 2010;
+# network packages, and in menu names, and other places.
+$ReleaseYear = 2011;
 
-# Meta Categories do not ship files, but call only for other packages
+# users can upgrade from this year to the current year; maybe a spread
+# of more than one year will be useful at some point, but not now.
+$MinRelease = $ReleaseYear - 1;
+
+# Meta Categories do not ship files, but only call for other packages.
 our @MetaCategories = qw/Collection Scheme/;
 our $MetaCategoriesRegexp = '(Collection|Scheme)';
 #
@@ -108,6 +112,7 @@ our %TLPDBConfigs = (
   "container_split_src_files" => 1,
   "container_split_doc_files" => 1,
   "container_format" => $DefaultContainerFormat,
+  "minrelease" => $MinRelease,
   "release" => $ReleaseYear,
 );
 

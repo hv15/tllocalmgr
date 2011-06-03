@@ -1,12 +1,12 @@
-# $Id: TLPDB.pm 18756 2010-06-05 16:31:31Z preining $
+# $Id: TLPDB.pm 22724 2011-06-01 13:56:40Z preining $
 # TeXLive::TLPDB.pm - module for using tlpdb files
-# Copyright 2007, 2008, 2009, 2010 Norbert Preining
+# Copyright 2007, 2008, 2009, 2010, 2011 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLPDB;
 
-my $svnrev = '$Revision: 18756 $';
+my $svnrev = '$Revision: 22724 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -36,11 +36,12 @@ C<TeXLive::TLPDB> -- A database of TeX Live Packages
   $tlpdb->writeout;
   $tlpdb->writeout(FILEHANDLE);
   $tlpdb->save;
+  $tlpdb->media;
   $tlpdb->available_architectures();
   $tlpdb->add_tlpcontainer($pkg, $ziploc [, $archrefs [, $dest ]] );
   $tlpdb->add_tlpobj($tlpobj);
   $tlpdb->needed_by($pkg);
-  $tlpdb->remove_package($pkg);
+  $tlpdb->remove_tlpobj($pkg);
   $tlpdb->get_package("packagename");
   $tlpdb->list_packages;
   $tlpdb->expand_dependencies(["-only-arch",] $totlpdb, @list);
@@ -55,11 +56,12 @@ C<TeXLive::TLPDB> -- A database of TeX Live Packages
   $tlpdb->language_lua_lines;
   $tlpdb->package_revision("packagename");
   $tlpdb->location;
+  $tlpdb->platform;
   $tlpdb->config_src_container;
   $tlpdb->config_doc_container;
   $tlpdb->config_container_format;
   $tlpdb->config_release;
-  $tlpdb->config_maxrelease;
+  $tlpdb->config_minrelease;
   $tlpdb->config_revision;
   $tlpdb->options;
   $tlpdb->option($key, [$value]);
@@ -68,6 +70,9 @@ C<TeXLive::TLPDB> -- A database of TeX Live Packages
   $tlpdb->settings;
   $tlpdb->setting($key, [$value]);
   $tlpdb->sizes_of_packages($opt_src, $opt_doc [, @packs ]);
+  $tlpdb->install_package($pkg, $dest_tlpdb, $nopostinstall, $fallbacktlpdb);
+  $tlpdb->remove_package($pkg, %options);
+
 
   TeXLive::TLPDB->listdir([$dir]);
   $tlpdb->generate_listfiles([$destdir]);
@@ -76,12 +81,13 @@ C<TeXLive::TLPDB> -- A database of TeX Live Packages
 
 =cut
 
-use TeXLive::TLConfig qw($CategoriesRegexp $DefaultCategory $InfraLocation
-      $DatabaseName $MetaCategoriesRegexp $Archive
-      %TLPDBOptions %TLPDBSettings);
-use TeXLive::TLUtils qw(dirname mkdirhier member win32 info debug ddebug
-                        tlwarn);
+use TeXLive::TLConfig;
+use TeXLive::TLUtils qw(dirname mkdirhier member win32 info log debug ddebug
+                        tlwarn basename download_file merge_into);
 use TeXLive::TLPOBJ;
+use TeXLive::TLWinGoo;
+
+use File::Temp qw/tempfile/;
 
 use Cwd 'abs_path';
 
@@ -97,14 +103,13 @@ my $_listdir;
 
 C<< TeXLive::TLPDB->new >> creates a new C<TLPDB> object. If the
 argument C<root> is given it will be initialized from the respective
-location within $path. If
-C<$path> begins with C<http://> or C<ftp://>, the program C<wget>
-is used to download the file.
-The C<$path> can start with C<file:/> in which case it is treated as
-a file on the filesystem in the usual way.
+location starting at $path. If C<$path> begins with C<http://> or
+C<ftp://>, the program C<wget> is used to download the file.  The
+C<$path> can also start with C<file:/> in which case it is treated as a
+file on the filesystem in the usual way.
 
-Returns either an object of type C<TeXLive::TLPDB>, or undef if the root
-was given but no package could be read from that location.
+Returns an object of type C<TeXLive::TLPDB>, or undef if the root was
+given but no package could be read from that location.
 
 =cut
 
@@ -117,11 +122,21 @@ sub new {
   };
   $_listdir = $params{'listdir'} if defined($params{'listdir'});
   bless $self, $class;
-  if (defined($self->{'root'})) {
-    my $nr_packages_read = $self->from_file("$self->{'root'}/$InfraLocation/$DatabaseName");
+  if (defined($params{'tlpdbfile'})) {
+    my $nr_packages_read
+      = $self->from_file("$self->{'root'}/$InfraLocation/$DatabaseName");
     if ($nr_packages_read == 0) {
-      # that is bad, we cannot read anything, so return undef
-      return(undef);
+      # that is bad, we didn't read anything, so return undef.
+      return undef;
+    }
+    return $self;
+  } 
+  if (defined($self->{'root'})) {
+    my $nr_packages_read
+      = $self->from_file("$self->{'root'}/$InfraLocation/$DatabaseName");
+    if ($nr_packages_read == 0) {
+      # that is bad, we didn't read anything, so return undef.
+      return undef;
     }
   }
   return $self;
@@ -185,14 +200,14 @@ sub needed_by {
 
 =pod
 
-=item C<< $tlpdb->remove_package($pkg) >>
+=item C<< $tlpdb->remove_tlpobj($pkg) >>
 
 Remove the package named C<$pkg> from the tlpdb. Gives a warning if the
 package is not present
 
 =cut
 
-sub remove_package {
+sub remove_tlpobj {
   my ($self,$pkg) = @_;
   if (defined($self->{'tlps'}{$pkg})) {
     delete $self->{'tlps'}{$pkg};
@@ -221,25 +236,54 @@ sub from_file {
   if (defined($self->{'root'})) {
     if ($self->{'root'} ne $root_from_path) {
       tlwarn("root=$self->{'root'}, root_from_path=$root_from_path\n");
-      tlwarn("Initialisation from different location as originally given.\nHope you are sure!\n");
+      tlwarn("Initialization from different location as originally given.\nHope you are sure!\n");
     }
   } else {
     $self->root($root_from_path);
   }
   my $retfh;
   my $tlpdbfile;
+  # do media detection
+  my $rootpath = $self->root;
+  if ($rootpath =~ m,http://|ftp://,) {
+    $media = 'NET';
+  } else {
+    if ($rootpath =~ m,file://*(.*)$,) {
+      $rootpath = "/$1";
+    }
+    if (-d "$rootpath/texmf/web2c") {
+      $media = 'local_uncompressed';
+    } elsif (-d "$rootpath/$Archive") {
+      $media = 'local_compressed';
+    } else {
+      # we cannot find the right type, return undefined, that should
+      # make people notice
+      return 0;
+    }
+  }
+  $self->{'media'} = $media;
+  #
+  # actually load the TLPDB
   if ($path =~ m;^((http|ftp)://|file:\/\/*);) {
     debug("TLPDB.pm: trying to initialize from $path\n");
     # if we have xzdec available we try the xz file
     if (defined($::progs{'xzdec'})) {
       # we first try the xz compressed file
-      my $tmpdir = TeXLive::TLUtils::get_system_tmpdir();
-      my $bn = TeXLive::TLUtils::basename("$path");
-      my $xzfile = "$tmpdir/$bn.$$.xz";
+      #
+      # we have to create a temp file to download to
+      my ($xzfh, $xzfile) = tempfile();
+      # now $xzfh filehandle is open, the file created
+      # TLUtils::download_file will just overwrite what is there
+      # on windows that doesn't work, so we close the fh immediately
+      # this creates a short loophole, but much better than before anyway
+      close($xzfh);
       my $xzfile_quote = $xzfile;
       # this is a variable of the whole sub as we have to remove the file
       # before returning
-      $tlpdbfile = "$tmpdir/$bn.$$";
+      my $tlpdbfh;
+      ($tlpdbfh, $tlpdbfile) = tempfile();
+      # same as above
+      close($tlpdbfh);
       my $tlpdbfile_quote = $tlpdbfile;
       if (win32()) {
         $xzfile  =~ s!/!\\!g;
@@ -349,6 +393,19 @@ sub save {
 
 =pod
 
+=item C<< $tlpdb->media >>
+
+Returns the media code the respective installation resides on.
+
+=cut
+
+sub media { 
+  my $self = shift ; 
+  return $self->{'media'};
+}
+
+=pod
+
 =item C<< $tlpdb->available_architectures >>
 
 The C<available_architectures> functions returns the list of available 
@@ -442,19 +499,20 @@ sub _add_tlpcontainer {
 
 =pod
 
-=item C<< $tlpdb->get_package("packagename") >> 
+=item C<< $tlpdb->get_package("pkgname") >> 
 
-The C<get_package> function returns a reference to a C<TLPOBJ> object
-in case its name the the argument name coincide.
+The C<get_package> function returns a reference to the C<TLPOBJ> object
+corresponding to the I<pkgname>, or undef.
 
 =cut
 
 sub get_package {
   my ($self,$pkg) = @_;
   if (defined($self->{'tlps'}{$pkg})) {
-    return($self->{'tlps'}{$pkg});
+  my $ret = $self->{'tlps'}{$pkg};
+    return $self->{'tlps'}{$pkg};
   } else {
-    return(undef);
+    return undef;
   }
 }
 
@@ -473,19 +531,20 @@ sub list_packages {
 
 =pod
 
-=item C<< $tlpdb->expand_dependencies >>
+=item C<< $tlpdb->expand_dependencies(["control",] $tlpdb, ($pkgs)) >>
 
-This function takes as first argument the target TLPDB and then a list of
-packages and returns the closure of this
-list with respect to the depends operator. (Sorry, that was for
-mathematicians)
+If the first argument is the string C<"-only-arch">, expands only
+dependencies of the form .ARCH.
 
-If the very first argument is "-only-arch" then it expands only dependencies
-of the form .ARCH.
-
-If the very first argument is "-no-collections" then dependencies between
+If the first argument is C<"-no-collections">, then dependencies between
 "same-level" packages (scheme onto scheme, collection onto collection,
 package onto package) are ignored.
+
+The next (or first) argument is the target TLPDB, then a list of
+packages.
+
+We return the closure of the package list with respect to the depends
+operator. (Sorry, that was for mathematicians.)
 
 =cut
 
@@ -638,10 +697,11 @@ package named in the first argument.
 
 sub package_revision {
   my ($self,$pkg) = @_;
-  if (defined($self->{'tlps'}{$pkg})) {
-    return($self->{'tlps'}{$pkg}->revision);
+  my $tlp = $self->get_package($pkg);
+  if (defined($tlp)) {
+    return $tlp->revision;
   } else {
-    return(undef);
+    return;
   }
 }
 
@@ -659,9 +719,9 @@ available architectures as packages with revision number -1.
 sub generate_packagelist {
   my $self = shift;
   my $fd = (@_ ? $_[0] : STDOUT);
-  foreach (sort keys %{$self->{'tlps'}}) {
-    print $fd $self->{'tlps'}{$_}->name, " ",
-              $self->{'tlps'}{$_}->revision, "\n";
+  foreach (sort $self->list_packages) {
+    print $fd $self->get_package($_)->name, " ",
+              $self->get_package($_)->revision, "\n";
   }
   foreach ($self->available_architectures) {
     print $fd "$_ -1\n";
@@ -684,8 +744,8 @@ sub generate_listfiles {
   if (not(defined($destdir))) {
     $destdir = TeXLive::TLPDB->listdir;
   }
-  foreach (sort keys %{$self->{'tlps'}}) {
-    $tlp = $self->{'tlps'}{$_};
+  foreach (sort $self->list_package) {
+    $tlp = $self->get_package($_);
     $self->_generate_listfile($tlp, $destdir);
   }
 }
@@ -831,6 +891,27 @@ sub location {
 
 =pod
 
+=item C<< $tlpdb->platform >>
+
+returns the platform of this installation.
+
+=cut
+
+# deduce the platform of the referenced media as follows:
+# - if the $tlpdb->setting("platform") is there it overrides the detected
+#   setting
+# - if it is not there call TLUtils::platform()
+sub platform {
+  # try to deduce the platform
+  my $self = shift;
+  my $ret = $self->setting("platform");
+  return $ret if defined $ret;
+  # the platform setting wasn't found in the tlpdb, try TLUtils::platform
+  return TeXLive::TLUtils::platform();
+}
+
+=pod
+
 =item C<< $tlpdb->listdir >>
 
 The function C<listdir> allows to read and set the packages variable
@@ -928,17 +1009,17 @@ sub config_release {
 
 =pod
 
-=item C<< $tlpdb->config_maxrelease >>
+=item C<< $tlpdb->config_minrelease >>
 
-Returns the currently allowed maximal release. See Options below.
+Returns the currently allowed minimal release. See Options below.
 
 =cut
 
-sub config_maxrelease {
+sub config_minrelease {
   my $self = shift;
   if (defined($self->{'tlps'}{'00texlive.config'})) {
     foreach my $d ($self->{'tlps'}{'00texlive.config'}->depends) {
-      if ($d =~ m!^maxrelease/(.*)$!) {
+      if ($d =~ m!^minrelease/(.*)$!) {
         return "$1";
       }
     }
@@ -984,21 +1065,7 @@ which contains the total size of all packages under discussion.
 sub sizes_of_packages {
   my ($self, $opt_src, $opt_doc, @packs) = @_;
   @packs || ( @packs = $self->list_packages() );
-  my $root = $self->root;
-  my $media;
-  if ($root =~ m!^(ctan$|(http|ftp)://)!i) {
-    $media = 'NET';
-  } else {
-    $root =~ s!file://*!/!i;
-    $root = abs_path($root);
-    if (-d "$root/$Archive") {
-      $media = 'CD';
-    } elsif (-d "$root/texmf/web2c") {
-      $media = 'DVD';
-    } else {
-      die "$0: that should not happen, no proper location found!";
-    }
-  }
+  my $media = $self->media;
   my %tlpsizes;
   my %tlpobjs;
   my $totalsize;
@@ -1008,23 +1075,7 @@ sub sizes_of_packages {
       warn "STRANGE: $p not to be found in ", $self->root;
       next;
     }
-    if ($media ne 'DVD') {
-      # we use the container size as the measuring unit since probably
-      # downloading will be the limiting factor
-      $tlpsizes{$p} = $tlpobjs{$p}->containersize;
-      $tlpsizes{$p} += $tlpobjs{$p}->srccontainersize if $opt_src;
-      $tlpsizes{$p} += $tlpobjs{$p}->doccontainersize if $opt_doc;
-    } else {
-      # we have to add the respective sizes, that is checking for 
-      # installation of src and doc file
-      $tlpsizes{$p} = $tlpobjs{$p}->runsize;
-      $tlpsizes{$p} += $tlpobjs{$p}->srcsize if $opt_src;
-      $tlpsizes{$p} += $tlpobjs{$p}->docsize if $opt_doc;
-      my %foo = %{$tlpobjs{$p}->binsize};
-      for my $k (keys %foo) { $tlpsizes{$p} += $foo{$k}; }
-      # all the packages sizes are in blocks, so transfer that to bytes
-      $tlpsizes{$p} *= $TeXLive::TLConfig::BlockSize;
-    }
+    $tlpsizes{$p} = $self->size_of_one_package($media, $tlpobjs{$p}, $opt_src, $opt_doc);
     $totalsize += $tlpsizes{$p};
   }
   if ($totalsize) {
@@ -1033,7 +1084,456 @@ sub sizes_of_packages {
   return \%tlpsizes;
 }
 
+sub size_of_one_package {
+  my ($self, $media, $tlpobj, $opt_src, $opt_doc) = @_;
+  my $size = 0;
+  if ($media ne 'local_uncompressed') {
+    # we use the container size as the measuring unit since probably
+    # downloading will be the limiting factor
+    $size =  $tlpobj->containersize;
+    $size += $tlpobj->srccontainersize if $opt_src;
+    $size += $tlpobj->doccontainersize if $opt_doc;
+  } else {
+    # we have to add the respective sizes, that is checking for
+    # installation of src and doc file
+    $size  = $tlpobj->runsize;
+    $size += $tlpobj->srcsize if $opt_src;
+    $size += $tlpobj->docsize if $opt_doc;
+    my %foo = %{$tlpobj->binsize};
+    for my $k (keys %foo) { $size += $foo{$k}; }
+    # all the packages sizes are in blocks, so transfer that to bytes
+    $size *= $TeXLive::TLConfig::BlockSize;
+  }
+  return $size;
+}
 
+=pod
+
+=item C<< $tlpdb->install_package($pkg, $dest_tlpdb, $nopostinstall, $fallbacktlpdb) >>
+
+Installs the package $pkg into $dest_tlpdb.
+
+=cut
+
+sub install_package {
+  my ($self, $pkg, $totlpdb, $nopostinstall, $fallbackmedia) = @_;
+  my $fromtlpdb = $self;
+  my $ret;
+  die("TLPDB not initialized, cannot find tlpdb!") unless (defined($fromtlpdb));
+  my $tlpobj = $fromtlpdb->get_package($pkg);
+  if (!defined($tlpobj)) {
+    if (defined($fallbackmedia)) {
+      if ($ret = $fallbackmedia->install_package($pkg,$totlpdb, $nopostinstall)) {
+        debug("installed $pkg from fallback\n");
+        return $ret;
+      } else {
+        tlwarn("$0: Cannot find package $pkg (in fallback, either)\n");
+        return 0;
+      }
+    } else {
+      tlwarn("$0: Cannot find package $pkg\n");
+      return 0;
+    }
+  } else {
+    my $container_src_split = $fromtlpdb->config_src_container;
+    my $container_doc_split = $fromtlpdb->config_doc_container;
+    # get options about src/doc splitting from $totlpdb
+    my $opt_src = $totlpdb->option("install_srcfiles");
+    my $opt_doc = $totlpdb->option("install_docfiles");
+    my $real_opt_doc = $opt_doc;
+    my $reloc = 1 if $tlpobj->relocated;
+    my $container;
+    my @installfiles;
+    my $root = $self->root;
+    # make sure that there is no terminal / in $root, otherwise we
+    # will get double // somewhere
+    $root =~ s!/$!!;
+    foreach ($tlpobj->runfiles) {
+      # s!^!$root/!;
+      push @installfiles, $_;
+    }
+    foreach ($tlpobj->allbinfiles) {
+      # s!^!$root/!;
+      push @installfiles, $_;
+    }
+    if ($opt_src) {
+      foreach ($tlpobj->srcfiles) {
+        # s!^!$root/!;
+        push @installfiles, $_;
+      }
+    }
+    if ($real_opt_doc) {
+      foreach ($tlpobj->docfiles) {
+        # s!^!$root/!;
+        push @installfiles, $_;
+      }
+    }
+    my $media = $self->media;
+    if ($media eq 'local_uncompressed') {
+      $container = \@installfiles;
+    } elsif ($media eq 'local_compressed') {
+      if (-r "$root/$Archive/$pkg.zip") {
+        $container = "$root/$Archive/$pkg.zip";
+      } elsif (-r "$root/$Archive/$pkg.tar.xz") {
+        $container = "$root/$Archive/$pkg.tar.xz";
+      } else {
+        tlwarn("Cannot find a package $pkg (.zip or .xz) in $root/$Archive\n");
+        next;
+      }
+    } elsif (&media eq 'NET') {
+      $container = "$root/$Archive/$pkg.$DefaultContainerExtension";
+    }
+    $self->_install_package ($container, $reloc, \@installfiles, $totlpdb) 
+      || return(0);
+    # if we are installing from local_compressed or NET we have to fetch the respective
+    # source and doc packages $pkg.source and $pkg.doc and install them, too
+    if (($media eq 'NET') || ($media eq 'local_compressed')) {
+      # we install split containers under the following conditions:
+      # - the container were split generated
+      # - src/doc files should be installed
+      # (- the package is not already a split one (like .i386-linux))
+      # the above test has been removed because it would mean that
+      #   texlive.infra.doc.tar.xz
+      # will never be installed, and we do already check that there
+      # are at all src/doc files, which in split packages of the form 
+      # foo.ARCH are not present. And if they are present, than that is fine,
+      # too (bin-foobar.win32.doc.tar.xz)
+      # - there are actually src/doc files present
+      if ($container_src_split && $opt_src && $tlpobj->srcfiles) {
+        my $srccontainer = $container;
+        $srccontainer =~ s/(\.tar\.xz|\.zip)$/.source$1/;
+        $self->_install_package ($srccontainer, $reloc, \@installfiles, $totlpdb) 
+          || return(0);
+      }
+      if ($container_doc_split && $real_opt_doc && $tlpobj->docfiles) {
+        my $doccontainer = $container;
+        $doccontainer =~ s/(\.tar\.xz|\.zip)$/.doc$1/;
+        $self->_install_package ($doccontainer, $reloc, \@installfiles, $totlpdb) 
+          || return(0);
+      }
+      #
+      # if we installed from NET/local_compressed and we got a relocatable container
+      # make sure that the stray texmf-dist/tlpkg directory is removed
+      # in USER MODE that should NOT be done because we keep the information
+      # there, but for now do it unconditionally
+      if ($tlpobj->relocated) {
+        my $reloctree = $totlpdb->root . "/" . $TeXLive::TLConfig::RelocTree;
+        my $tlpkgdir = $reloctree . "/" . $TeXLive::TLConfig::InfraLocation;
+        my $tlpod = $tlpkgdir .  "/tlpobj";
+        TeXLive::TLUtils::rmtree($tlpod) if (-d $tlpod);
+        # we try to remove the tlpkg directory, that will succeed only
+        # if it is empty. So in normal installations it won't be, but
+        # if we are installing a relocated package it is texmf-dist/tlpkg
+        # which will be (hopefully) empty
+        rmdir($tlpkgdir) if (-d "$tlpkgdir");
+      }
+    }
+    # we don't want to have wrong information in the tlpdb, so remove the
+    # src/doc files if they are not installed ...
+    if (!$opt_src) {
+      $tlpobj->clear_srcfiles;
+    }
+    if (!$real_opt_doc) {
+      $tlpobj->clear_docfiles;
+    }
+    # if a package is relocatable we have to cancel the reloc prefix
+    # and unset the relocated setting
+    # before we save it to the local tlpdb
+    if ($tlpobj->relocated) {
+      $tlpobj->cancel_reloc_prefix;
+      $tlpobj->relocated(0);
+    }
+    # we have to write out the tlpobj file since it is contained in the
+    # archives (.tar.xz) but at DVD install time we don't have them
+    my $tlpod = $totlpdb->root . "/tlpkg/tlpobj";
+    mkdirhier( $tlpod );
+    open(TMP,">$tlpod/".$tlpobj->name.".tlpobj") or
+      die("Cannot open tlpobj file for ".$tlpobj->name);
+    $tlpobj->writeout(\*TMP);
+    close(TMP);
+    $totlpdb->add_tlpobj($tlpobj);
+    $totlpdb->save;
+    # compute the return value
+    TeXLive::TLUtils::announce_execute_actions("enable", $tlpobj);
+    if (!$nopostinstall) {
+      # do the postinstallation actions
+      #
+      # Run the post installation code in the postaction tlpsrc entries
+      # in case we are on w32 and the admin did install for himself only
+      # we switch off admin mode
+      if (win32() && admin() && !$totlpdb->option("w32_multi_user")) {
+        non_admin();
+      }
+      # for now desktop_integration maps to both installation
+      # of desktop shortcuts and menu items, but we can split them later
+      &TeXLive::TLUtils::do_postaction("install", $tlpobj,
+        $totlpdb->option("file_assocs"),
+        $totlpdb->option("desktop_integration"),
+        $totlpdb->option("desktop_integration"),
+        $totlpdb->option("post_code"));
+    }
+  }
+  return 1;
+}
+
+#
+# _install_package
+# actually does the installation work
+# returns 1 on success and 0 on error
+#
+sub _install_package {
+  my ($self, $what, $reloc, $filelistref, $totlpdb) = @_;
+
+  my $media = $self->media;
+  my $target = $totlpdb->root;
+  my $tempdir = "$target/temp";
+
+  my @filelist = @$filelistref;
+
+  # we assume that $::progs has been set up!
+  my $wget = $::progs{'wget'};
+  my $xzdec = $::progs{'xzdec'};
+  if (!defined($wget) || !defined($xzdec)) {
+    tlwarn("_install_package: programs not set up properly, strange.\n");
+    return(0);
+  }
+
+  if (ref $what) {
+    # we are getting a ref to a list of files, so install from DVD
+    my $root = $self->root;
+    foreach my $file (@$what) {
+      # @what is taken, not @filelist!
+      # is this still needed?
+      my $dn=dirname($file);
+      mkdirhier("$target/$dn");
+      TeXLive::TLUtils::copy "$root/$file", "$target/$dn";
+    }
+    # we always assume that copy will work
+    return(1);
+  } elsif ($what =~ m,\.tar(\.xz)?$,) {
+    my $type = defined($1) ? "xz" : "tar";
+      
+    $target .= "/$TeXLive::TLConfig::RelocTree" if $reloc;
+
+    # this is the case when we install from local_compressed or the NET, or a backup
+    #
+    # in all other cases we create temp files .tar.xz (or use the present
+    # one), xzdec them, and then call tar
+
+    my $fn = basename($what);
+    my $pkg = $fn;
+    $pkg =~ s/\.tar(\.xz)?$//;
+    mkdirhier("$tempdir");
+    my $tarfile;
+    my $remove_tarfile = 1;
+    if ($type eq "xz") {
+      my $xzfile = "$tempdir/$fn";
+      $tarfile  = "$tempdir/$fn"; $tarfile =~ s/\.xz$//;
+      my $xzfile_quote = $xzfile;
+      my $tarfile_quote = $tarfile;
+      my $target_quote = $target;
+      if (win32()) {
+        $xzfile =~ s!/!\\!g;
+        $xzfile_quote = "\"$xzfile\"";
+        $tarfile =~ s!/!\\!g;
+        $tarfile_quote = "\"$tarfile\"";
+        $target =~ s!/!\\!g;
+        $target_quote = "\"$target\"";
+      }
+      if ($what =~ m,http://|ftp://,) {
+        # we are installing from the NET
+        # download the file and put it into temp
+        if (!download_file($what, $xzfile) || (! -r $xzfile)) {
+          tlwarn("Downloading \n");
+          tlwarn("   $what\n");
+          tlwarn("did not succeed, please retry.\n");
+          unlink($tarfile, $xzfile);
+          return(0);
+        }
+      } else {
+        # we are installing from local compressed files
+        # copy it to temp
+        TeXLive::TLUtils::copy($what, $tempdir);
+      }
+      debug("un-xzing $xzfile to $tarfile\n");
+      system("$xzdec < $xzfile_quote > $tarfile_quote");
+      if (! -f $tarfile) {
+        tlwarn("_install_package: Unpacking $xzfile failed, please retry.\n");
+        unlink($tarfile, $xzfile);
+        return(0);
+      }
+      unlink($xzfile);
+    } else {
+      $tarfile = "$tempdir/$fn";
+      if ($what =~ m,http://|ftp://,) {
+        if (!download_file($what, $tarfile) || (! -r $tarfile)) {
+          tlwarn("Downloading \n");
+          tlwarn("   $what\n");
+          tlwarn("failed, please retry.\n");
+          unlink($tarfile);
+          return(0);
+        }
+      } else {
+        $tarfile = $what;
+        $remove_tarfile = 0;
+      }
+    }
+    my $ret = TeXLive::TLUtils::untar($tarfile, $target, $remove_tarfile);
+    # remove the $pkg.tlpobj, we recreate it anyway again
+    unlink ("$target/tlpkg/tlpobj/$pkg.tlpobj") 
+      if (-r "$target/tlpkg/tlpobj/$pkg.tlpobj");
+    return $ret;
+  } else {
+    tlwarn("_install_package: Don't know how to install $what\n");
+    return(0);
+  }
+}
+
+=pod
+
+=item << $tlpdb->remove_package($pkg, %options) >>
+
+removes a single pacakge with all the files and the entry in the db.
+
+=cut
+
+#
+# remove_package removes a single package with all files (including the
+# # tlpobj files) and the entry from the tlpdb.
+sub remove_package {
+  my ($self, $pkg, %opts) = @_;
+  my $localtlpdb = $self;
+  my $tlp = $localtlpdb->get_package($pkg);
+  if (!defined($tlp)) {
+    tlwarn ("$pkg: package not present, cannot remove\n");
+  } else {
+    my $currentarch = $self->platform();
+    if ($pkg eq "texlive.infra" || $pkg eq "texlive.infra.$currentarch") {
+      log ("Not removing $pkg, it is essential!\n");
+      return 0;
+    }
+    # we have to chdir to $localtlpdb->root
+    my $Master = $localtlpdb->root;
+    chdir ($Master) || die "chdir($Master) failed: $!";
+    my @files = $tlp->all_files;
+    # also remove the .tlpobj file
+    push @files, "tlpkg/tlpobj/$pkg.tlpobj";
+    # and the ones from src/doc splitting
+    if (-r "tlpkg/tlpobj/$pkg.source.tlpobj") {
+      push @files, "tlpkg/tlpobj/$pkg.source.tlpobj";
+    }
+    if (-r "tlpkg/tlpobj/$pkg.doc.tlpobj") {
+      push @files, "tlpkg/tlpobj/$pkg.doc.tlpobj";
+    }
+    #
+    # some packages might be relocated, thus having the RELOC prefix
+    # in user mode we just remove the prefix, in normal mode we
+    # replace it with texmf-dist
+    # since we don't have user mode 
+    if ($tlp->relocated) {
+      for (@files) {
+        s:^$RelocPrefix/:$RelocTree/:;
+      }
+    }
+    #
+    # we want to check that a file is only listed in one package, so
+    # in case that a file to be removed is listed in another package
+    # we will warn and *not* remove it
+    my %allfiles;
+    for my $p ($localtlpdb->list_packages) {
+      next if ($p eq $pkg); # we have to skip the to be removed package
+      for my $f ($localtlpdb->get_package($p)->all_files) {
+        $allfiles{$f} = $p;
+      }
+    }
+    my @goodfiles = ();
+    my @badfiles = ();
+    my @debugfiles = ();
+    for my $f (@files) {
+      # in usermode we have to add texmf-dist again for comparison
+      if (defined($allfiles{$f})) {
+        # this file should be removed but is mentioned somewhere, too
+        # take into account if we got a warn list
+        if (defined($opts{'remove-warn-files'})) {
+          my %a = %{$opts{'remove-warn-files'}};
+          if (defined($a{$f})) {
+            push @badfiles, $f;
+          } else {
+            # NO NOTHING HERE!!!
+            # DON'T PUSH IT ON @goodfiles, it will be removed, which we do
+            # NOT want. We only want to supress the warning!
+            push @debugfiles, $f;
+          }
+        } else {
+          push @badfiles, $f;
+        }
+      } else {
+        push @goodfiles, $f;
+      }
+    }
+    if ($#debugfiles >= 0) {
+      debug("The following files will not be removed due to the removal of $pkg.\n");
+      debug("But we do not warn on it because they are moved to other packages.\n");
+      for my $f (@debugfiles) {
+        debug(" $f - $allfiles{$f}\n");
+      }
+    }
+    if ($#badfiles >= 0) {
+      # warn the user
+      tlwarn("The following files should be removed due to the removal of $pkg,\n");
+      tlwarn("but are part of another package, too.\n");
+      for my $f (@badfiles) {
+        tlwarn(" $f - $allfiles{$f}\n");
+      }
+    }
+    #
+    # Run only the postaction code thing now since afterwards the
+    # files will be gone ...
+    if (defined($opts{'nopostinstall'}) && $opts{'nopostinstall'}) {
+      &TeXLive::TLUtils::do_postaction("remove", $tlp,
+        0, # option_file_assocs,
+        0, # option_desktop_integration, menu part
+        0, # option_desktop_integration, desktop part
+        $localtlpdb->option("post_code"));
+    }
+    # 
+    my @removals = &TeXLive::TLUtils::removed_dirs (@goodfiles);
+    # now do the removal
+    for my $entry (@goodfiles) {
+      unlink $entry;
+    }
+    for my $d (@removals) {
+      rmdir $d;
+    }
+    $localtlpdb->remove_tlpobj($pkg);
+    TeXLive::TLUtils::announce_execute_actions("disable", $tlp);
+    # should we save at each removal???
+    # advantage: the tlpdb actually reflects what is installed
+    # disadvantage: removing a collection calls the save routine several times
+    # still I consider it better that the tlpdb is in a consistent state
+    $localtlpdb->save;
+    #
+    # Run the post installation code in the postaction tlpsrc entries
+    # in case we are on w32 and the admin did install for himself only
+    # we switch off admin mode
+    if (win32() && admin() && !$localtlpdb->option("w32_multi_user")) {
+      non_admin();
+    }
+    #
+    # Run the post installation code in the postaction tlpsrc entries
+    # the postaction code part cannot be evaluated now since the
+    # files are already removed.
+    # Again, desktop integration maps to desktop and menu links
+    if (!$nopostinstall) {
+      &TeXLive::TLUtils::do_postaction("remove", $tlp,
+        $localtlpdb->option("file_assocs"),
+        $localtlpdb->option("desktop_integration"),
+        $localtlpdb->option("desktop_integration"),
+        0);
+    }
+  }
+  return 1;
+}
 
 
 =pod
@@ -1078,7 +1578,7 @@ sub _set_value_pkg {
     }
   }
   $pkg->depends(@newdeps);
-  $self->{'tlps'}{$pkgname} = $pkg;
+  $self->add_tlpobj($pkg);
 }
 
 sub _option_value {
@@ -1368,9 +1868,9 @@ which set one or more of the following options:
 
 =over 4
 
-=item C<container_split_src_files>
+=item C<container_split_src_files/[01]>
 
-=item C<container_split_doc_files>
+=item C<container_split_doc_files/[01]>
 
 These options specify that at container generation time the source and
 documentation files for a package have been put into a separate container
@@ -1380,6 +1880,16 @@ named C<package.source.extension> and C<package.doc.extension>.
 
 This option specifies a format for containers. The currently supported 
 formats are C<xz> and C<zip>. But note that C<zip> is untested.
+
+=item C<release/I<relspec>>
+
+This option specifies the current release. The first four characters must
+be a year.
+
+=item C<minrelease/I<relspec>>
+
+This option specifies the minimum release for which this repository is
+valid.
 
 =back
 

@@ -1,6 +1,6 @@
-# $Id: TLPOBJ.pm 19893 2010-09-25 02:16:34Z preining $
+# $Id: TLPOBJ.pm 22535 2011-05-19 09:58:08Z mpg $
 # TeXLive::TLPOBJ.pm - module for using tlpobj files
-# Copyright 2007, 2008, 2009, 2010 Norbert Preining
+# Copyright 2007, 2008, 2009, 2010, 2011 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
@@ -15,7 +15,7 @@ use TeXLive::TLTREE;
 our $_tmp;
 my $_containerdir;
 
-my $svnrev = '$Revision: 19893 $';
+my $svnrev = '$Revision: 22535 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -37,11 +37,11 @@ sub new {
     catalogue   => $params{'catalogue'},
     relocated   => $params{'relocated'},
     runfiles    => defined($params{'runfiles'}) ? $params{'runfiles'} : [],
-    runsize   => $params{'runsize'},
+    runsize     => $params{'runsize'},
     srcfiles    => defined($params{'srcfiles'}) ? $params{'srcfiles'} : [],
-    srcsize   => $params{'srcsize'},
+    srcsize     => $params{'srcsize'},
     docfiles    => defined($params{'docfiles'}) ? $params{'docfiles'} : [],
-    docsize   => $params{'docsize'},
+    docsize     => $params{'docsize'},
     executes    => defined($params{'executes'}) ? $params{'executes'} : [],
     postactions => defined($params{'postactions'}) ? $params{'postactions'} : [],
     # note that binfiles is a HASH with keys of $arch!
@@ -49,7 +49,7 @@ sub new {
     binsize     => defined($params{'binsize'}) ? $params{'binsize'} : {},
     depends     => defined($params{'depends'}) ? $params{'depends'} : [],
     revision    => $params{'revision'},
-    cataloguedata   => defined($params{'cataloguedata'}) ? $params{'cataloguedata'} : {},
+    cataloguedata => defined($params{'cataloguedata'}) ? $params{'cataloguedata'} : {},
   };
   $_containerdir = $params{'containerdir'} if defined($params{'containerdir'});
   bless $self, $class;
@@ -64,7 +64,6 @@ sub copy {
   bless $bla, "TeXLive::TLPOBJ";
   return $bla;
 }
-
 
 
 sub from_file {
@@ -83,14 +82,17 @@ sub from_fh {
   my $arch;
   my $size;
 
-  #while (my $line = $fh->getline) {
   while (my $line = <$fh>) {
+    # we do not worry about whitespace at the end of a line;
+    # that would be a bug in the db creation, and it takes some
+    # noticeable time to get rid of it.  So just chomp.
     chomp($line);
+    
     # we call tllog only when something will be logged, to speed things up.
     # this is the inner loop bounding the time to read tlpdb.
     dddebug("reading line: >>>$line<<<\n") if ($::opt_verbosity >= 3);
-    $line =~ /^\s*#/ && next;          # skip comment lines
-    if ($line =~ /^\s*$/o) {
+    $line =~ /^#/ && next;          # skip comment lines
+    if ($line =~ /^\s*$/) {
       if (!$started) { next; }
       if (defined($multi)) {
         # we may read from a tldb file
@@ -100,179 +102,105 @@ sub from_fh {
         die("No empty line allowed within tlpobj files!");
       }
     }
-    if ($line =~ /^ /o) {
-      if ( ($lastcmd eq "runfiles") ||
-           ($lastcmd eq "binfiles") ||
-           ($lastcmd eq "docfiles") ||
-           ($lastcmd eq "srcfiles") ||
-           ($lastcmd eq "executes") ||
-           ($lastcmd eq "postaction") ||
-           ($lastcmd eq "depend") ) {
-        $line =~ s/^ /${lastcmd}continued /;
+
+    my ($cmd, $arg) = split(/\s+/, $line, 2);
+    # first command must be name
+    $started || $cmd eq 'name'
+      or die("First directive needs to be 'name', not $line");
+
+    # now the big switch, ordered by decreasing number of occurences
+    if ($cmd eq '') {
+      if ($lastcmd eq "runfiles" || $lastcmd eq "srcfiles") {
+        push @{$self->{$lastcmd}}, $arg;
+      } elsif ($lastcmd eq "docfiles") {
+        my ($f, $rest) = split(' ', $arg, 2);
+        push @{$self->{'docfiles'}}, $f;
+        # docfiles can have tags, but the parse_line function is so
+        # time intense that we try to call it only when necessary
+        if (defined $rest) {
+          my @words = &TeXLive::TLUtils::parse_line('\s+', 0, $rest);
+          for (@words) {
+            my ($k, $v) = split('=', $_, 2);
+            if ($k eq 'details' || $k eq 'language') {
+              $self->{'docfiledata'}{$f}{$k} = $v;
+            } else {
+              die "Unknown docfile tag: $line";
+            }
+          }
+        }
+      } elsif ($lastcmd eq "binfiles") {
+        push @{$self->{'binfiles'}{$arch}}, $arg;
       } else {
         die("Continuation of $lastcmd not allowed, please fix tlpobj: line = $line!\n");
       }
-    }
-    # remove white space at the end of a line
-    $line =~ s/\s*$//;
-    if ($line =~ /^name\s*([-.\w]+)/o) {
-      $name = "$1";
-      $lastcmd = "name";
-      $self->name("$name");
+    } elsif ($cmd eq "longdesc") {
+      my $desc = defined $arg ? $arg : '';
+      if (defined($self->{'longdesc'})) {
+        $self->{'longdesc'} .= " $desc";
+      } else {
+        $self->{'longdesc'} = $desc;
+      }
+    } elsif ($cmd =~ /^catalogue-(.+)$/o) {
+      $self->{'cataloguedata'}{$1} = $arg if defined $arg;
+    } elsif ($cmd =~ /^(doc|src|run)files$/o) {
+      my $type = $1;
+      for (split ' ', $arg) {
+        my ($k, $v) = split('=', $_, 2);
+        if ($k eq 'size') {
+        $self->{"${type}size"} = $v;
+        } else {
+          die "Unknown tag: $line";
+        }
+      }
+    } elsif ($cmd eq 'containersize' || $cmd eq 'srccontainersize'
+        || $cmd eq 'doccontainersize') {
+      $arg =~ /^[0-9]+$/ or die "Illegal size value: $line!";
+      $self->{$cmd} = $arg;
+    } elsif ($cmd eq 'containermd5' || $cmd eq 'srccontainermd5'
+        || $cmd eq 'doccontainermd5') {
+      $arg =~ /^[a-f0-9]+$/ or die "Illegal md5 value: $line!";
+      $self->{$cmd} = $arg;
+    } elsif ($cmd eq 'name') {
+      $arg =~ /^([-.\w]+)$/ or die("Invalid name: $line!");
+      $self->{'name'} = $arg;
       $started && die("Cannot have two name directives: $line!");
       $started = 1;
-    } else {
-      $started || die("First directive needs to be 'name', not $line");
-      if ($line =~ /^(src|run)filescontinued\s+(.*)\s*/o) {
-        push @{$self->{$1."files"}}, "$2";
-        next;
-      } elsif ($line =~ /^docfilescontinued\s+(.*)\s*/o) {
-        # docfiles can have tags, but the quotewords function is so
-        # time intense that we try to call it only when necessary
-        my ($f, $rest) = split(' ', "$1", 2);
-        my @words;
-        if (defined $rest) {
-          @words = &TeXLive::TLUtils::quotewords('\s+', 0, "$rest");
-        }
-        push @{$self->{'docfiles'}}, $f;
-        while (@words) {
-          $_ = shift @words;
-          if (/^details=(.*)$/) {
-            $self->{'docfiledata'}{$f}{'details'} = "$1";
-          } elsif (/^language=(.*)$/) {
-            $self->{'docfiledata'}{$f}{'language'} = "$1";
-          } else {
-            die "Unknown docfile tag: $line";
-          }
-        }
-        next;
-      } elsif ($line =~ /^binfilescontinued\s+(.*)$/o) {
-        push @{$self->{'binfiles'}{$arch}}, "$1";
-        next;
-      } elsif ($line =~ /^binfiles\s+/o) {
-        my @words = split ' ',$line;
-        # first entry is "binfiles", shift it away
-        shift @words;
-        while (@words) {
-          $_ = shift @words;
-          if (/^arch=(.*)$/) {
-            $arch=$1;
-          } elsif (/^size=(.*)$/) {
-            $size=$1;
-          } else {
-            die "Unknown tag: $line";
-          }
-        }
-        if (defined($size)) {
-          $self->{'binsize'}{$arch} = $size;
-        }
-        $lastcmd = "binfiles";
-        next;
-      } elsif ($line eq "longdesc") {
-        if (defined($self->{'longdesc'})) {
-          $self->{'longdesc'} .= " ";
-        } else {
-          $self->{'longdesc'} = "";
-        }
-        $lastcmd = "longdesc";
-        next;
-      } elsif ($line =~ /^longdesc\s+(.*)$/o) {
-        if (defined($self->{'longdesc'})) {
-          $self->{'longdesc'} .= " $1";
-        } else {
-          $self->{'longdesc'} = "$1";
-        }
-        $lastcmd = "longdesc";
-        next;
-      } elsif ($line =~ /^category\s+(.*)$/o) {
-        $self->{'category'} = "$1";
-        $lastcmd = "category";
-        if ($self->{'category'} !~ /^$CategoriesRegexp/o) {
-          tlwarn("Unknown category " . $self->{'category'} . " for package "
-            . $self->name . " found.\nPlease update texlive.infra.\n");
-        }
-        next;
-      } elsif ($line =~ /^relocated\s+([01])$/o) {
-        $self->relocated("$1");
-        $lastcmd = "relocated";
-        next;
-      } elsif ($line =~ /^revision\s+(.*)$/o) {
-        $self->{'revision'} = "$1";
-        $lastcmd = "revision";
-        next;
-      } elsif ($line =~ /^containersize\s+([0-9]+)$/o) {
-        $self->containersize("$1");
-        $lastcmd = "containersize";
-        next;
-      } elsif ($line =~ /^srccontainersize\s+([0-9]+)$/o) {
-        $self->srccontainersize("$1");
-        $lastcmd = "srccontainersize";
-        next;
-      } elsif ($line =~ /^doccontainersize\s+([0-9]+)$/o) {
-        $self->doccontainersize("$1");
-        $lastcmd = "doccontainersize";
-        next;
-      } elsif ($line =~ /^containermd5\s+([a-f0-9]+)$/o) {
-        $self->containermd5("$1");
-        $lastcmd = "containermd5";
-        next;
-      } elsif ($line =~ /^srccontainermd5\s+([a-f0-9]+)$/o) {
-        $self->srccontainermd5("$1");
-        $lastcmd = "srccontainermd5";
-        next;
-      } elsif ($line =~ /^doccontainermd5\s+([a-f0-9]+)$/o) {
-        $self->doccontainermd5("$1");
-        $lastcmd = "doccontainermd5";
-        next;
-      } elsif ($line =~ /^catalogue\s+(.*)$/o) {
-        $self->catalogue("$1");
-        $lastcmd = "catalogue";
-        next;
-      } elsif ($line =~ /^(doc|src|run)files\s+/o) {
-        my $type = $1;
-        my @words = split ' ',$line;
-        # first entry is "XXXfiles", shift it away
-        $lastcmd = shift @words;
-        while (@words) {
-          $_ = shift @words;
-          if (/^size=(.*)$/) {
-            $size=$1;
-          } else {
-            die "Unknown tag: $line";
-          }
-        }
-        if (defined($size)) {
-          $self->{"${type}size"} = $size;
-        }
-        next;
-      } elsif ($line =~ /^execute(continued)?\s*(.*)$/o) {
-        push @{$self->{'executes'}}, "$2" unless "$2" eq "";
-        $lastcmd = "execute";
-        next;
-      } elsif ($line =~ /^postaction(continued)?\s*(.*)$/o) {
-        push @{$self->{'postactions'}}, "$2" unless "$2" eq "";
-        $lastcmd = "postaction";
-        next;
-      } elsif ($line =~ /^depend(continued)?\s*(.*)$/o) {
-        push @{$self->{'depends'}}, "$2" unless "$2" eq "";
-        $lastcmd = "depend";
-        next;
-      } elsif ($line =~ /^catalogue-([^\s]+)\s+(.*)$/o) {
-        $self->{'cataloguedata'}{$1} = "$2";
-      } elsif ($line =~ /^catalogue-([^\s]+)\s*/o) {
-        1; # ignore e.g. catalogue-ctan without parameter
-      } elsif ($line eq "shortdesc") {
-        $self->{'shortdesc'} .= " ";
-        $lastcmd = "shortdesc";
-        next;
-      } elsif ($line =~ /^shortdesc\s+(.*)$/o) { # shortdesc <real text>
-        $self->{'shortdesc'} .= "$1";
-        $lastcmd = "shortdesc";
-        next;
-      } else {
-        die("Unknown directive ...$line... , please fix it!");
+    } elsif ($cmd eq 'category') {
+      $self->{'category'} = $arg;
+      if ($self->{'category'} !~ /^$CategoriesRegexp/o) {
+        tlwarn("Unknown category " . $self->{'category'} . " for package "
+          . $self->name . " found.\nPlease update texlive.infra.\n");
       }
+    } elsif ($cmd eq 'revision') {
+      $self->{'revision'} = $arg;
+    } elsif ($cmd eq 'shortdesc') {
+      $self->{'shortdesc'} .= defined $arg ? $arg : ' ';
+    } elsif ($cmd eq 'execute' || $cmd eq 'postaction'
+        || $cmd eq 'depend') {
+      push @{$self->{$cmd . 's'}}, $arg if defined $arg;
+    } elsif ($cmd eq 'binfiles') {
+      for (split ' ', $arg) {
+        my ($k, $v) = split('=', $_, 2);
+        if ($k eq 'arch') {
+          $arch = $v;
+        } elsif ($k eq 'size') {
+          $size = $v;
+        } else {
+          die "Unknown tag: $line";
+        }
+      }
+      if (defined($size)) {
+        $self->{'binsize'}{$arch} = $size;
+      }
+    } elsif ($cmd eq 'relocated') {
+      ($arg eq '0' || $arg eq '1') or die "Illegal value: $line!";
+      $self->{'relocated'} = $arg;
+    } elsif ($cmd eq 'catalogue') {
+      $self->{'catalogue'} = $arg;
+    } else {
+      die("Unknown directive ...$line... , please fix it!");
     }
+    $lastcmd = $cmd unless $cmd eq '';
   }
   return $started;
 }
@@ -788,7 +716,7 @@ sub update_from_catalogue
       $foo =~ s/^.Date: //;
       # trying to extract the interesting part of a subversion date
       # keyword expansion here, e.g.,
-      # $Date: 2010-09-25 04:16:34 +0200 (Sat, 25 Sep 2010) $
+      # $Date: 2011-05-19 11:58:08 +0200 (Thu, 19 May 2011) $
       # ->2007-08-15 19:43:35 +0100
       $foo =~ s/ \(.*\)( *\$ *)$//;  # maybe nothing after parens
       $self->cataloguedata->{'date'} = $foo;
@@ -958,8 +886,9 @@ sub all_files {
 
 sub allbinfiles {
   my $self = shift;
-  my @ret;
+  my @ret = ();
   my %binfiles = %{$self->binfiles};
+
   foreach my $arch (keys %binfiles) {
     push (@ret, @{$binfiles{$arch}});
   }
@@ -1521,8 +1450,8 @@ reads a C<tlpobj> file.
 =item C<from_fh($filehandle[, $multi])>
 
 read the textual representation of a TLPOBJ from an already opened
-file handle.  If C<$multi> is undefined (ie not given) then multiple
-tlpobj in the same file are treated as errors. If C<$multi> is defined
+file handle.  If C<$multi> is undef (i.e., not given) then multiple
+tlpobj in the same file are treated as errors. If C<$multi> is defined,
 then returns after reading one tlpobj.
 
 Returns C<1> if it found a C<tlpobj>, otherwise C<0>.
@@ -1654,7 +1583,11 @@ at the end with $. Otherwise it is prefix with a / and anchored at the end.
 
 =item C<all_files>
 
-returns a list of all files of all types.
+returns a list of all files of all types.  However, binary files won't
+be found until dependencies have been expanded via (most likely)
+L<TeXLive::TLPDB::expand_dependencies>.  For a more or less standalone
+example, see the C<find_old_files> function in the
+script C<Master/tlpkg/libexec/place>.
 
 =item C<allbinfiles>
 

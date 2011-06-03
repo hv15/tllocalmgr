@@ -1,12 +1,12 @@
-# $Id: TLUtils.pm 20818 2010-12-21 04:35:03Z preining $
+# $Id: TLUtils.pm 22688 2011-05-30 19:42:46Z siepo $
 # TeXLive::TLUtils.pm - the inevitable utilities for TeX Live.
-# Copyright 2007, 2008, 2009, 2010 Norbert Preining, Reinhard Kotucha
+# Copyright 2007, 2008, 2009, 2010, 2011 Norbert Preining, Reinhard Kotucha
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLUtils;
 
-my $svnrev = '$Revision: 20818 $';
+my $svnrev = '$Revision: 22688 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -30,6 +30,7 @@ C<TeXLive::TLUtils> -- utilities used in the TeX Live infrastructure
 =head2 Platform Detection
 
   TeXLive::TLUtils::platform();
+  TeXLive::TLUtils::platform_name($canonical_host);
   TeXLive::TLUtils::platform_desc($platform);
   TeXLive::TLUtils::win32();
   TeXLive::TLUtils::unix();
@@ -60,6 +61,7 @@ C<TeXLive::TLUtils> -- utilities used in the TeX Live infrastructure
   TeXLive::TLUtils::download_file($path, $destination [, $progs ]);
   TeXLive::TLUtils::setup_programs($bindir, $platform);
   TeXLive::TLUtils::tlcmp($file, $file);
+  TeXLive::TLUtils::nulldev();
 
 =head2 Installer Functions
 
@@ -97,6 +99,7 @@ C<TeXLive::TLUtils> -- utilities used in the TeX Live infrastructure
   TeXLive::TLUtils::compare_tlpobjs($tlpA, $tlpB);
   TeXLive::TLUtils::compare_tlpdbs($tlpdbA, $tlpdbB);
   TeXLive::TLUtils::report_tlpdb_differences(\%ret);
+  TeXLive::TLUtils::mktexupd();
 
 =head1 DESCRIPTION
 
@@ -120,6 +123,7 @@ BEGIN {
   @ISA = qw(Exporter);
   @EXPORT_OK = qw(
     &platform
+    &platform_name
     &platform_desc
     &unix
     &getenv
@@ -174,6 +178,8 @@ BEGIN {
     &compare_tlpdbs
     &report_tlpdb_differences
     &setup_persistent_downloads
+    &mktexupd
+    &nulldev
   );
   @EXPORT = qw(setup_programs download_file process_logging_options
                tldie tlwarn info log debug ddebug dddebug debug_hash
@@ -198,8 +204,41 @@ $::opt_verbosity = 0;  # see process_logging_options
 
 If C<$^O=~/MSWin(32|64)$/i> is true we know that we're on
 Windows and we set the global variable C<$::_platform_> to C<win32>.
-Otherwise we call C<config.guess>.  The output of C<config.guess>
-is filtered as described below.
+Otherwise we call C<platform_name> with the output of C<config.guess>
+as argument.
+
+The result is stored in a global variable C<$::_platform_>, and
+subsequent calls just return that value.
+
+=cut
+
+sub platform {
+  unless (defined $::_platform_) {
+    if ($^O =~ /^MSWin/i) {
+      $::_platform_ = "win32";
+    } else {
+      my $config_guess = "$::installerdir/tlpkg/installer/config.guess";
+
+      # We cannot rely on #! in config.guess but have to call /bin/sh
+      # explicitly because sometimes the 'noexec' flag is set in
+      # /etc/fstab for ISO9660 file systems.
+      chomp (my $guessed_platform = `/bin/sh '$config_guess'`);
+
+      # For example, if the disc or reader has hardware problems.
+      die "$0: could not run $config_guess, cannot proceed, sorry"
+        if ! $guessed_platform;
+
+      $::_platform_ = platform_name($guessed_platform);
+    }
+  }
+  return $::_platform_;
+}
+
+
+=item C<platform_name($canonical_host)>
+
+Convert a canonical host names as returned by C<config.guess> into
+TeX Live platform names.
 
 CPU type is determined by a regexp, and any C</^i.86/> name is replaced
 by C<i386>.
@@ -212,27 +251,10 @@ supported.
 If a particular platform is not found in this list we use the regexp
 C</.*-(.*$)/> as a last resort and hope it provides something useful.
 
-The result is stored in a global variable C<$::_platform_>, and
-subsequent calls just return that value.
-
 =cut
 
-sub platform 
-{
-  unless (defined $::_platform_) {
-    if ($^O=~/^MSWin(32|64)$/i) {
-      $::_platform_="win32";
-    } else {
-      my $config_guess = "$::installerdir/tlpkg/installer/config.guess";
-
-      # We cannot rely on #! in config.guess but have to call /bin/sh
-      # explicitly because sometimes the 'noexec' flag is set in
-      # /etc/fstab for ISO9660 file systems.
-      chomp (my $guessed_platform = `/bin/sh $config_guess`);
-
-      # For example, if the disc or reader has hardware problems.
-      die "$0: could not run $config_guess, cannot proceed, sorry"
-        if ! $guessed_platform;
+sub platform_name {
+      my ($guessed_platform) = @_;
 
       $guessed_platform =~ s/^x86_64-(.*-k?)freebsd/amd64-$1freebsd/;
       my $CPU; # CPU type as reported by config.guess.
@@ -263,12 +285,8 @@ sub platform
         ($OS = $guessed_platform) =~ s/.*-(.*)/$1/;
       }
 
-      $::_platform_ = "$CPU-$OS";
-    }
-  }
-  return $::_platform_;
+      return "$CPU-$OS";
 }
-
 
 =item C<platform_desc($platform)>
 
@@ -511,10 +529,10 @@ sub dirname {
   if (win32) {
     $path=~s!\\!/!g;
   }
-  if ($path=~m!/!) {  # dirname("foo/bar/baz") -> "foo/bar"
-    $path=~m!(.*)/.*!;
+  if ($path=~m!/!) {   # dirname("foo/bar/baz") -> "foo/bar"
+    $path=~m!(.*)/.*!; # works because of greedy matching
     return $1;
-  } else {              # dirname("ignore") -> "."
+  } else {             # dirname("ignore") -> "."
     return ".";
   }
 }
@@ -564,14 +582,24 @@ Tests whether its argument is a directory where we can create a directory.
 
 =cut
 
+sub dir_slash {
+  my $d = shift;
+  $d = "$d/" unless $d =~ m!/!;
+  return $d;
+}
+
+# test whether subdirectories can be created in the argument
 sub dir_creatable {
   $path=shift;
-  return 0 unless -d $path;
+  #print STDERR "testing $path\n";
   $path =~ s!\\!/!g if win32;
-  $path =~ s!/$!!g;
+  $path =~ s!/$!!;
+  return 0 unless -d dir_slash($path);
+  #print STDERR "testing $path\n";
   my $i = 0;
   while (-e $path . "/" . $i) { $i++; }
   my $d = $path."/".$i;
+  #print STDERR "creating $d\n";
   return 0 unless mkdir $d;
   return 0 unless -d $d;
   rmdir $d;
@@ -601,9 +629,9 @@ a fileserver.
 
 sub dir_writable {
   $path=shift;
-  return 0 unless -d $path;
+  return 0 unless -d dir_slash($path);
   $path =~ s!\\!/!g if win32;
-  $path =~ s!/$!!g;
+  $path =~ s!/$!!;
   my $i = 0;
   while (-e $path . "/" . $i) { $i++; }
   my $f = $path."/".$i;
@@ -1152,7 +1180,7 @@ the TLPDB given by C<$to_tlpdb>. Information on files are taken from
 the TLPDB C<$from_tlpdb>.
 
 C<$opt_src> and C<$opt_doc> specify whether srcfiles and docfiles should be
-installed (currently implemented only for installation from DVD).
+installed (currently implemented only for installation from uncompressed media).
 
 Returns 1 on success and 0 on error.
 
@@ -1176,7 +1204,7 @@ sub install_packages {
     if (!defined($tlpobjs{$p})) {
       die "STRANGE: $p not to be found in ", $fromtlpdb->root;
     }
-    if ($media ne 'DVD') {
+    if ($media ne 'local_uncompressed') {
       # we use the container size as the measuring unit since probably
       # downloading will be the limiting factor
       $tlpsizes{$p} = $tlpobjs{$p}->containersize;
@@ -1215,9 +1243,9 @@ sub install_packages {
     push @installfiles, $tlpobj->allbinfiles;
     push @installfiles, $tlpobj->srcfiles if ($opt_src);
     push @installfiles, $tlpobj->docfiles if ($real_opt_doc);
-    if ($media eq 'DVD') {
+    if ($media eq 'local_uncompressed') {
       $container = [ $root, @installfiles ];
-    } elsif ($media eq 'CD') {
+    } elsif ($media eq 'local_compressed') {
       if (-r "$root/$Archive/$package.zip") {
         $container = "$root/$Archive/$package.zip";
       } elsif (-r "$root/$Archive/$package.tar.xz") {
@@ -1236,9 +1264,9 @@ sub install_packages {
       # so only return here
       return 0;
     }
-    # if we are installing from CD or NET we have to fetch the respective
+    # if we are installing from compressed media we have to fetch the respective
     # source and doc packages $pkg.source and $pkg.doc and install them, too
-    if (($media eq 'NET') || ($media eq 'CD')) {
+    if (($media eq 'NET') || ($media eq 'local_compressed')) {
       # we install split containers under the following conditions:
       # - the container were split generated
       # - src/doc files should be installed
@@ -1283,7 +1311,7 @@ sub install_packages {
     }
     $totlpdb->add_tlpobj($tlpobj);
     # we have to write out the tlpobj file since it is contained in the
-    # archives (.tar.xz) but at DVD install time we don't have them
+    # archives (.tar.xz) but at uncompressed-media install time we don't have them
     my $tlpod = $totlpdb->root . "/tlpkg/tlpobj";
     mkdirhier( $tlpod );
     open(TMP,">$tlpod/".$tlpobj->name.".tlpobj") ||
@@ -1308,7 +1336,7 @@ This function installs the files given in @$filelistref from C<$what>
 into C<$target>.
 
 C<$size> gives the size in bytes of the container, or -1 if we are
-installing from DVD, i.e., from a list of files to be copied.
+installing from uncompressed media, i.e., from a list of files to be copied.
 
 If C<$what> is a reference to a list of files then these files are
 assumed to be readable and are copied to C<$target>, creating dirs on
@@ -1325,7 +1353,7 @@ file on the system and is likewise piped through C<xzdec> and C<tar>.
 In both of these cases currently the list C<$@filelistref> currently
 is not taken into account (should be fixed!).
 
-if C<$reloc> is true the container (NET or CD mode) is packaged in a way
+if C<$reloc> is true the container (NET or local_compressed mode) is packaged in a way
 that the initial texmf-dist is missing.
 
 Returns 1 on success and 0 on error.
@@ -1347,7 +1375,7 @@ sub install_package {
     return 0;
   }
   if (ref $what) {
-    # we are getting a ref to a list of files, so install from DVD
+    # we are getting a ref to a list of files, so install from uncompressed media
     my ($root, @files) = @$what;
     foreach my $file (@files) {
       # @what is taken, not @filelist!
@@ -1357,7 +1385,7 @@ sub install_package {
       copy "$root/$file", "$target/$dn";
     }
   } elsif ($what =~ m,\.tar.xz$,) {
-    # this is the case when we install from CD or the NET
+    # this is the case when we install from compressed media
     #
     # in all other cases we create temp files .tar.xz (or use the present
     # one), xzdec them, and then call tar
@@ -1434,7 +1462,7 @@ sub install_package {
           return 0;
         }
       } else {
-        # we are installing from CD
+        # we are installing from local compressed media
         # copy it to temp
         copy($what, $tempdir);
       }
@@ -1457,7 +1485,7 @@ sub install_package {
     if ($what =~ m,http://|ftp://,) {
       # we downloaded the original .tar.lzma from the net, so we keep it
     } else {
-      # we are downloading it from CD, so we can unlink it to save
+      # we are downloading it from local compressed media, so we can unlink it to save
       # disk space
       unlink($xzfile);
     }
@@ -1497,6 +1525,9 @@ sub do_postaction {
     } elsif ($pa =~ m/\s*fileassoc\s+(.*)\s*$/) {
       $ret &&= _do_postaction_fileassoc($how, $do_fileassocs, $tlpobj, $1);
       next;
+    } elsif ($pa =~ m/\s*progid\s+(.*)\s*$/) {
+      next unless $do_fileassocs;
+      $ret &&= _do_postaction_progid($how, $tlpobj, $1);
     } elsif ($pa =~ m/\s*script\s+(.*)\s*$/) {
       next unless $do_script;
       $ret &&= _do_postaction_script($how, $tlpobj, $1);
@@ -1546,6 +1577,7 @@ sub _do_postaction_fileassoc {
   }
   return 1;
 }
+
 sub _do_postaction_filetype {
   my ($how, $tlpobj, $pa) = @_;
   return 1 unless win32();
@@ -1582,6 +1614,44 @@ sub _do_postaction_filetype {
     TeXLive::TLWinGoo::register_file_type($name, $cmd);
   } elsif ($how eq "remove") {
     TeXLive::TLWinGoo::unregister_file_type($name);
+  } else {
+    tlwarn("Unknown mode $how\n");
+    return 0;
+  }
+  return 1;
+}
+
+# alternate filetype (= progid) for an extension;
+# associated program shows up in `open with' menu
+sub _do_postaction_progid {
+  my ($how, $tlpobj, $pa) = @_;
+  return 1 unless win32();
+  my ($errors, %keyval) =
+    parse_into_keywords($pa, qw/extension filetype/);
+
+  if ($errors) {
+    tlwarn("parsing the postaction line >>$pa<< did not succeed!\n");
+    return 0;
+  }
+
+  if (!defined($keyval{'extension'})) {
+    tlwarn("extension of progid postaction not given\n");
+    return 0;
+  }
+  my $extension = $keyval{'extension'};
+
+  if (!defined($keyval{'filetype'})) {
+    tlwarn("filetype of progid postaction not given\n");
+    return 0;
+  }
+  my $filetype = $keyval{'filetype'};
+
+  &log("postaction $how progid for " . $tlpobj->name .
+    ": $extension, $filetype\n");
+  if ($how eq "install") {
+    TeXLive::TLWinGoo::add_to_progids($extension, $filetype);
+  } elsif ($how eq "remove") {
+    TeXLive::TLWinGoo::remove_from_progids($extension, $filetype);
   } else {
     tlwarn("Unknown mode $how\n");
     return 0;
@@ -2097,7 +2167,7 @@ sub setup_programs {
     }
   } else {
     if (!defined($platform) || ($platform eq "")) {
-      # we assume that we run from the DVD, so we can call platform() and
+      # we assume that we run from uncompressed media, so we can call platform() and
       # thus also the config.guess script
       # but we have to setup $::installerdir because the platform script
       # relies on it
@@ -2162,7 +2232,7 @@ sub setup_unix_one {
       #
       # create tmp dir only when necessary
       $tmp = TeXLive::TLUtils::tl_tmpdir() unless defined($tmp);
-      # probably we are running from DVD and want to copy it to
+      # probably we are running from uncompressed media and want to copy it to
       # some temporary location
       copy($def, $tmp);
       my $bn = basename($def);
@@ -2326,6 +2396,16 @@ sub _download_file
   } else {
     return 1;
   }
+}
+
+=item C<nulldev ()>
+
+Return C</dev/null> on Unix and C<nul> on Windows.
+
+=cut
+
+sub nulldev {
+  return (&win32)? 'nul' : '/dev/null';
 }
 
 
@@ -2769,14 +2849,8 @@ in the list of the remaining arguments.
 =cut
 
 sub member {
-  my ($e, @l) = @_;
-  my ($f);
-  foreach $f (@l) {
-    if ($e eq $f) {
-      return 1;
-    }
-  }
-  return 0;
+  my $what = shift;
+  return scalar grep($_ eq $what, @_);
 }
 
 
@@ -2803,17 +2877,30 @@ sub merge_into {
 Test whether installation with TEXDIR set to $texdir would succeed due to
 writing permissions.
 
+Writable or not, we will not allow installation to the root
+directory (Unix) or the root of the system drive (Windows).
+
 =cut
 
 sub texdir_check {
-  my ($texdir) = shift;                       # PATH/texlive/2008
-  my $texdirparent = dirname($texdir);        # PATH/texlive
-  my $texdirpparent = dirname($texdirparent); # PATH
-  if ( (dir_creatable($texdirpparent)) ||
-       ( (-d $texdirparent) && (dir_creatable($texdirparent)) ) ||
-       ( (-d $texdir) && (dir_writable($texdir)) ) ) {
-    return 1;
-  }
+  my $texdir = shift;
+  my $texdirparent;
+  my $texdirpparent;
+  $texdir =~ s!/$!!; # remove final slash
+  #print STDERR "Checking $texdir".'[/]'."\n";
+  # disallow unix root
+  return 0 if $texdir eq "";
+  # disallow w32 systemdrive root
+  return 0 if (win32() and $texdir eq $ENV{SystemDrive});
+
+  return dir_writable($texdir) if (-d dir_slash($texdir));
+  ($texdirparent = $texdir) =~ s!/[^/]*$!!;
+  #print STDERR "Checking $texdirparent".'[/]'."\n";
+  return  dir_creatable($texdirparent) if -d dir_slash($texdirparent);
+  # try another level up the tree
+  ($texdirpparent = $texdirparent) =~ s!/[^/]*$!!;
+  #print STDERR "Checking $texdirpparent".'[/]'."\n";
+  return dir_creatable($texdirpparent) if -d dir_slash($texdirpparent);
   return 0;
 }
 
@@ -3083,7 +3170,7 @@ sub process_logging_options {
 
 =pod
 
-This function returns a "windowsified" version of its single argument
+This function returns a "Windows-ized" version of its single argument
 I<path>, i.e., replaces all forward slashes with backslashes, and adds
 an additional C<"> at the beginning and end if I<path> contains any
 spaces.  It also makes the path absolute. So if $path does not start
@@ -3133,21 +3220,22 @@ sub forward_slashify {
 
 =item C<setup_persistent_downloads()>
 
-Set up to use persistent connections using LWP/TLDownload.
+Set up to use persistent connections using LWP/TLDownload, that is look
+for a download server.  Return the TLDownload object if successful, else
+false.
 
 =cut
 
-sub setup_persistent_downloads
-{
+sub setup_persistent_downloads {
   if ($TeXLive::TLDownload::net_lib_avail) {
-    debug("setting up persistent downloads succeeded!\n");
+    ddebug("setup_persistent_downloads has net_lib_avail set\n");
     $::tldownload_server = TeXLive::TLDownload->new;
     if (!defined($::tldownload_server)) {
-      debug("TLUtils:setup_persistent_downloads: ::tldownload_server undefined\n");
+      ddebug("TLUtils:setup_persistent_downloads: failed to get ::tldownload_server\n");
     } else {
-      debug("TLUtils:setup_persistent_downloads: succeeded in getting ::tldownload_server\n");
+      ddebug("TLUtils:setup_persistent_downloads: got ::tldownload_server\n");
     }
-    return ($::tldownload_server);
+    return $::tldownload_server;
   }
   return 0;
 }
@@ -3522,6 +3610,100 @@ sub parse_line {
   return(@pieces);
 }
 
+=item C<mktexupd ()>
+
+Append entries to C<ls-R> files.  Usage example:
+
+  my $updLSR=&mktexupd();
+  $updLSR->{mustexist}(1);
+  $updLSR->{add}(file1);
+  $updLSR->{add}(file2);
+  $updLSR->{add}(file3);
+  $updLSR->{exec}();
+  
+The first line creates a new object.  Only one such object should be 
+created in a program in order to avoid duplicate entries in C<ls-R> files.
+
+C<add> pushes a filename or a list of filenames to a hash encapsulated 
+in a closure.  Filenames must be specified with the full (absolute) path.  
+Duplicate entries are ignored.  
+
+C<exec> checks for each component of C<$TEXMFDBS> whether there are files
+in the hash which have to be appended to the corresponding C<ls-R> files 
+and eventually updates the corresponding C<ls-R> files.  Files which are 
+in directories not stated in C<$TEXMFDBS> are silently ignored.
+
+If the flag C<mustexist> is set, C<exec> aborts with an error message 
+if a file supposed to be appended to an C<ls-R> file doesn't exist physically
+on the file system.  This option was added for compatibility with the 
+C<mktexupd> shell script.  This option shouldn't be enabled in scripts,
+except for testing, because it degrades performance on non-cached file
+systems.
+
+=cut
+
+sub mktexupd {
+  my %files;
+  my $mustexist=0;
+
+  my $hash={
+    "add" => sub {     
+      foreach my $file (@_) {
+        $file =~ s|\\|/|g;
+        $files{$file}=1;
+      }
+    },
+    # "reset" => sub { 
+    #    %files=();
+    # },
+    "mustexist" => sub {
+      $mustexist=shift;
+    },
+   "exec" => sub {
+      # check whether files exist
+      if ($mustexist) {
+        foreach my $file (keys %files) {
+          die "File \"$file\" doesn't exist.\n" if (! -f $file);
+        }
+      }
+      my $delim= (&win32)? ';' : ':';
+      my $TEXMFDBS;
+      chomp($TEXMFDBS=`kpsewhich --show-path="ls-R"`);
+
+      my @texmfdbs=split ($delim, "$TEXMFDBS");
+      my %dbs;
+     
+      foreach my $path (keys %files) {
+        foreach my $db (@texmfdbs) {
+          $db=substr($db, -1) if ($db=~m|/$|); # strip leading /
+          if (substr($path, 0, length("$db/")) eq "$db/") {
+            # we appended a / because otherwise "texmf" is recognized as a
+            # substring of "texmf-dist".
+            my $path='./' . substr($path, length("$db/"));
+            my ($dir, $file);
+            $_=$path;
+            ($dir, $file) = m|(.*)/(.*)|;
+            $dbs{$db}{$dir}{$file}=1;
+          }
+        }
+      }
+      foreach my $db (keys %dbs) {
+        if (! -f "$db" || ! -w "$db/ls-R") {
+          &mkdirhier ($db);
+        }
+        open LSR, ">>$db/ls-R";
+        foreach my $dir (keys %{$dbs{$db}}) {
+          print LSR "\n$dir:\n";
+          foreach my $file (keys %{$dbs{$db}{$dir}}) {
+            print LSR "$file\n";
+          }
+        }
+        close LSR;
+      }
+    }
+  };
+  return $hash;
+}
 
 
 =back
