@@ -4,6 +4,7 @@ use warnings;
 use strict;
 use File::Path;
 use LWP::Simple;
+require LWP::UserAgent;
 use Term::ANSIColor qw(:constants);
 use Term::ShellUI;
 use Getopt::Long;
@@ -57,7 +58,6 @@ $Term::ANSIColor::AUTORESET = 1;
 my $term = new Term::ShellUI( commands => get_commands());
 $term->prompt( "tllocalmgr> " );
 
-
 ########### INITIALIZATION ###########
 
 unless ( -d $ROOT ) {
@@ -90,12 +90,14 @@ unless ($skipupdate) {
 		print "Retrieving new TeXLive database from CTAN...\n";
 		initlog() unless $initlog;
 		print LOG "* Retrieving new TeXLive database from CTAN...\n\t$TLPDB";
-		if (is_error( my $rc = getstore($TLPDB,$LOCALDBXZ) ) ) {
-            die "could not fetch $TLPDB : $rc";
+		my $agent = LWP::UserAgent->new;
+		my $rc = $agent->get($TLPDB, ":content_file" => $LOCALDBXZ);
+		unless ($rc->is_success) {
+			die "could not fetch $TLPDB :\n" . $rc->status_line();
         };
         
-		system("test -f $ROOT/tlpkg/texlive.tlpdb && mv $ROOT/tlpkg/texlive.tlpdb $ROOT/tlpkg/texlive.tlpdb.old");
-		system("unxz $ROOT/tlpkg/texlive.tlpdb.xz");
+		system("test -f $LOCALDB && mv $LOCALDB $LOCALDB.old");
+		system("unxz $LOCALDBXZ");
 	}
 };
 
