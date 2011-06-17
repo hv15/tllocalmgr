@@ -2,15 +2,33 @@
 use 5.010;
 use warnings;
 use strict;
-my $TEXMFVAR = "/var/lib/texmf";
+use File::Path;
+use LWP::Simple;
+use Term::ANSIColor qw(:constants);
+use Term::ShellUI;
+use Getopt::Long;
 use lib ('tlpkg', "/var/lib/texmf/arch/tlpkg");
-# XXX: Why the line below raise a bug???
-#use lib ('tlpkg', "$TEXMFVAR/arch/tlpkg");
 use TeXLive::Arch;
-our $VERSION = "0.4.2";
-our $YEAR = "2010";
 
-use Getopt::Long; 
+die "You can't run this program as root\n" if $ENV{'USER'} eq "root";
+
+# Paths
+my $TEXMFVAR = "/var/lib/texmf";
+my $INSTALLEDPKGS = "$TEXMFVAR/arch/installedpkgs";
+
+our $VERSION = "0.4.3";
+our $YEAR = "2011";
+# my $CTANBASEURL="http://mirror.ctan.org/systems/texlive/tlnet";
+# for TexLive 2011 pretest
+my $CTANBASEURL = "http://www.math.utah.edu/pub/texlive/tlpretest";
+# my $CTANBASEURL="ftp://tug.org/texlive/tlnet"; # <<<< TEMPORARY
+
+my $ROOT = "$ENV{HOME}/.texlive/texmf-var/arch";
+my $LOCALDB = "$ROOT/tlpkg/texlive.tlpdb";
+my $LOCALDBXZ = "$LOCALDB.xz";
+my $logfile = "$ROOT/tllocalmgr.log";
+
+############# Option parsing ##########
 my $opts = {};
 GetOptions( $opts,
 			'skipupdate',
@@ -22,39 +40,22 @@ GetOptions( $opts,
 			'help|h',
 			'version|v'
 		);
-
-use File::Path;
-use LWP::Simple;
-use Term::ANSIColor qw(:constants);
-$Term::ANSIColor::AUTORESET = 1; 
-use Term::ShellUI;
-
-die "You can't run this program as root\n" if $ENV{'USER'} eq "root";
-
 die usage(), "\n" if $opts->{'help'};
 die version(), "\n" if $opts->{'version'};
-
-my $term = new Term::ShellUI( commands => get_commands());
-$term->prompt( "tllocalmgr> " );
-
-my $CTANBASEURL="http://mirror.ctan.org/systems/texlive/tlnet";
-#my $CTANBASEURL="ftp://tug.org/texlive/tlnet"; # <<<< TEMPORARY
-
-my $ROOT = "$ENV{HOME}/.texlive/texmf-var/arch";
-my $LOCALDB = "$ROOT/tlpkg/texlive.tlpdb";
-my $LOCALDBXZ = "$LOCALDB.xz";
-my $INSTALLEDPKGS = "$TEXMFVAR/arch/installedpkgs";
-my $logfile = "$ROOT/tllocalmgr.log";
-
 my $skipupdate = $opts->{'skipupdate'} || 0;
 my $forceupdate = $opts->{'forceupdate'} || 0;
 my $location = $opts->{'location'} || $ROOT;
 my $mirror = $opts->{'mirror'} || $CTANBASEURL;
-$ENV{ANSI_COLORS_DISABLED} = 1 if $opts->{'nocolor'} eq 1;
+$ENV{ANSI_COLORS_DISABLED} = 1 if $opts->{'nocolor'};
 my $localsearch = $opts->{'localsearch'} || 0;
 
+# Main URLs
 my $TLARCHIVE="$mirror/archive";
 my $TLPDB="$mirror/tlpkg/texlive.tlpdb.xz";
+
+$Term::ANSIColor::AUTORESET = 1; 
+my $term = new Term::ShellUI( commands => get_commands());
+$term->prompt( "tllocalmgr> " );
 
 
 ########### INITIALIZATION ###########
