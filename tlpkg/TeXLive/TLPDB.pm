@@ -85,7 +85,7 @@ use TeXLive::TLConfig;
 use TeXLive::TLUtils qw(dirname mkdirhier member win32 info log debug ddebug
                         tlwarn basename download_file merge_into);
 use TeXLive::TLPOBJ;
-use TeXLive::TLWinGoo;
+#use TeXLive::TLWinGoo;
 
 use File::Temp qw/tempfile/;
 
