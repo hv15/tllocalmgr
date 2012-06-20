@@ -1,12 +1,12 @@
-# $Id: TLTREE.pm 19481 2010-07-16 17:25:00Z karl $
+# $Id: TLTREE.pm 26615 2012-05-24 00:39:35Z karl $
 # TeXLive::TLTREE.pm - work with the tree of all files
-# Copyright 2007, 2008, 2009, 2010 Norbert Preining
+# Copyright 2007-2012 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLTREE;
 
-my $svnrev = '$Revision: 19481 $';
+my $svnrev = '$Revision: 26615 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -203,22 +203,23 @@ sub size_of {
 =pod
 
 The function B<get_matching_files> takes as arguments the type of the pattern
-(bin, src, doc, run), the pattern itself, and an options architecture.
+(bin, src, doc, run), the pattern itself, the package name (without
+.ARCH specifications), and an optional architecture.
 It returns a list of files matching that pattern (in the case
 of bin patterns for that arch).
 
 =cut
 
 sub get_matching_files {
-  my ($self, $type, $p, $arch) = @_;
-  if ($type eq "bin") {
-    my $ARCH = $arch;
-    my $newp;
-    eval "\$newp = \"$p\"";
-    return($self->_get_matching_files($type,$newp));
-  } else {  # non-bin pattern
-    return($self->_get_matching_files($type,$p));
+  my ($self, $type, $p, $pkg, $arch) = @_;
+  my $ARCH = $arch;
+  my $PKGNAME = $pkg;
+  my $newp;
+  eval "\$newp = \"$p\"";
+  if (!defined($newp)) {
+    print "Huuu: cannot generate newp from p: p=$p, pkg=$pkg, arch=$arch, type=$type\n";
   }
+  return($self->_get_matching_files($type,$newp));
 }
 
   

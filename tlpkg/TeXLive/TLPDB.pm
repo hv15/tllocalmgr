@@ -1,12 +1,12 @@
-# $Id: TLPDB.pm 22724 2011-06-01 13:56:40Z preining $
+# $Id: TLPDB.pm 26615 2012-05-24 00:39:35Z karl $
 # TeXLive::TLPDB.pm - module for using tlpdb files
-# Copyright 2007, 2008, 2009, 2010, 2011 Norbert Preining
+# Copyright 2007-2012 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLPDB;
 
-my $svnrev = '$Revision: 22724 $';
+my $svnrev = '$Revision: 26615 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -69,21 +69,33 @@ C<TeXLive::TLPDB> -- A database of TeX Live Packages
   $tlpdb->add_default_options();
   $tlpdb->settings;
   $tlpdb->setting($key, [$value]);
-  $tlpdb->sizes_of_packages($opt_src, $opt_doc [, @packs ]);
-  $tlpdb->install_package($pkg, $dest_tlpdb, $nopostinstall, $fallbacktlpdb);
+  $tlpdb->sizes_of_packages($opt_src, $opt_doc, $ref_arch_list [, @packs ]);
+  $tlpdb->install_package($pkg, $dest_tlpdb);
   $tlpdb->remove_package($pkg, %options);
-
+  $tlpdb->install_package_files($file [, $file ]);
 
   TeXLive::TLPDB->listdir([$dir]);
   $tlpdb->generate_listfiles([$destdir]);
+
+  $tlpdb->make_virtual;
+  $tlpdb->is_virtual;
+  $tlpdb->virtual_add_tlpdb($tlpdb, $tag);
+  $tlpdb->virtual_remove_tlpdb($tag);
+  $tlpdb->virtual_get_package($pkg, $tag);
+  $tlpdb->candidates($pkg);
+  $tlpdb->virtual_candidate($pkg);
+  $tlpdb->virtual_pinning( [@tlpkpins ] );
 
 =head1 DESCRIPTION
 
 =cut
 
-use TeXLive::TLConfig;
+use TeXLive::TLConfig qw($CategoriesRegexp $DefaultCategory $InfraLocation
+      $DatabaseName $MetaCategoriesRegexp $Archive
+      %TLPDBOptions %TLPDBSettings
+      $RelocPrefix $RelocTree);
 use TeXLive::TLUtils qw(dirname mkdirhier member win32 info log debug ddebug
-                        tlwarn basename download_file merge_into);
+                        tlwarn basename download_file merge_into tldie);
 use TeXLive::TLPOBJ;
 #use TeXLive::TLWinGoo;
 
@@ -123,8 +135,7 @@ sub new {
   $_listdir = $params{'listdir'} if defined($params{'listdir'});
   bless $self, $class;
   if (defined($params{'tlpdbfile'})) {
-    my $nr_packages_read
-      = $self->from_file("$self->{'root'}/$InfraLocation/$DatabaseName");
+    my $nr_packages_read = $self->from_file($params{'tlpdbfile'}, '-from-file');
     if ($nr_packages_read == 0) {
       # that is bad, we didn't read anything, so return undef.
       return undef;
@@ -161,6 +172,10 @@ The C<add_tlpobj> adds an object of the type TLPOBJ to the TLPDB.
 
 sub add_tlpobj {
   my ($self,$tlp) = @_;
+  if ($self->is_virtual) {
+    tlwarn("cannot add tlpobj to a virtual tlpdb\n");
+    return 0;
+  }
   $self->{'tlps'}{$tlp->name} = $tlp;
 }
 
@@ -209,6 +224,10 @@ package is not present
 
 sub remove_tlpobj {
   my ($self,$pkg) = @_;
+  if ($self->is_virtual) {
+    tlwarn("cannot remove tlpobj from a virtual tlpdb\n");
+    return 0;
+  }
   if (defined($self->{'tlps'}{$pkg})) {
     delete $self->{'tlps'}{$pkg};
   } else {
@@ -228,15 +247,22 @@ It returns the actual number of packages (TLPOBJs) read from C<$filename>.
 =cut
 
 sub from_file {
-  my ($self, $path) = @_;
-  if (@_ != 2) {
+  my ($self, $path, $arg) = @_;
+  if ($self->is_virtual) {
+    tlwarn("cannot initialize from file a virtual tlpdb\n");
+    return 0;
+  }
+  if (@_ < 2) {
     die "$0: from_file needs filename for initialization";
   }
   my $root_from_path = dirname(dirname($path));
   if (defined($self->{'root'})) {
     if ($self->{'root'} ne $root_from_path) {
-      tlwarn("root=$self->{'root'}, root_from_path=$root_from_path\n");
-      tlwarn("Initialization from different location as originally given.\nHope you are sure!\n");
+      # only warn if we are not given $arg = "-from-file"
+      if (!defined($arg) || ($arg ne "-from-file")) {
+        tlwarn("root=$self->{'root'}, root_from_path=$root_from_path\n");
+        tlwarn("Initialization from different location as originally given.\nHope you are sure!\n");
+      }
     }
   } else {
     $self->root($root_from_path);
@@ -291,6 +317,7 @@ sub from_file {
       }
       $xzfile_quote = "\"$xzfile\"";
       $tlpdbfile_quote = "\"$tlpdbfile\"";
+      my $xzdec = TeXLive::TLUtils::quotify_path_with_spaces($::progs{'xzdec'});
       debug("trying to download $path.xz to $xzfile\n");
       my $ret = TeXLive::TLUtils::download_file("$path.xz", "$xzfile");
       # better to check both, the return value AND the existence of the file
@@ -300,7 +327,7 @@ sub from_file {
         # xzdec *hopefully* returns 0 on success and anything else on failure
         # we don't have to negate since not zero means error in the shell
         # and thus in perl true
-        if (system("$::progs{'xzdec'} <$xzfile_quote >$tlpdbfile_quote")) {
+        if (system("$xzdec <$xzfile_quote >$tlpdbfile_quote")) {
           debug("un-xzing $xzfile failed, tryin gplain file\n");
           # to be sure we unlink the xz file and the tlpdbfile
           unlink($xzfile);
@@ -361,6 +388,10 @@ the file handle given as argument.
 
 sub writeout {
   my $self = shift;
+  if ($self->is_virtual) {
+    tlwarn("cannot write out a virtual tlpdb\n");
+    return 0;
+  }
   my $fd = (@_ ? $_[0] : STDOUT);
   foreach (sort keys %{$self->{'tlps'}}) {
     ddebug("writeout: tlpname=$_  ", $self->{'tlps'}{$_}->name, "\n");
@@ -380,6 +411,10 @@ as location. If the location is undefined, die.
 
 sub save {
   my $self = shift;
+  if ($self->is_virtual) {
+    tlwarn("cannot save a virtual tlpdb\n");
+    return 0;
+  }
   my $path = $self->location;
   mkdirhier(dirname($path));
   my $tmppath = "$path.tmp";
@@ -401,6 +436,9 @@ Returns the media code the respective installation resides on.
 
 sub media { 
   my $self = shift ; 
+  if ($self->is_virtual) {
+    return "virtual";
+  }
   return $self->{'media'};
 }
 
@@ -415,6 +453,19 @@ architectures as set in the options section
 =cut
 
 sub available_architectures {
+  my $self = shift;
+  my @archs;
+  if ($self->is_virtual) {
+    for my $k (keys %{$self->{'tlpdbs'}}) {
+      TeXLive::TLUtils::push_uniq \@archs, $self->{'tlpdbs'}{$k}->available_architectures;
+    }
+    return sort @archs;
+  } else {
+    return $self->_available_architectures;
+  }
+}
+
+sub _available_architectures {
   my $self = shift;
   my @archs = $self->setting("available_architectures");
   if (! @archs) {
@@ -443,6 +494,10 @@ adds new dependencies they are not necessarily fulfilled.
 
 sub add_tlpcontainer {
   my ($self, $package, $ziplocation, $archrefs, $dest) = @_;
+  if ($self->is_virtual) {
+    tlwarn("cannot add tlp container to a virtual tlpdb\n");
+    return 0;
+  }
   my @archs;
   if (defined($archrefs)) {
     @archs = @$archrefs;
@@ -507,12 +562,64 @@ corresponding to the I<pkgname>, or undef.
 =cut
 
 sub get_package {
+  my ($self,$pkg,$tag) = @_;
+  if ($self->is_virtual) {
+    if (defined($tag)) {
+      if (defined($self->{'packages'}{$pkg}{'tags'}{$tag})) {
+        return $self->{'packages'}{$pkg}{'tags'}{$tag}{'tlp'};
+      } else {
+        debug("TLPDB::get_package: package $pkg not found in repository $tag\n");
+        return;
+      }
+    } else {
+      $tag = $self->{'packages'}{$pkg}{'target'};
+      if (defined($tag)) {
+        return $self->{'packages'}{$pkg}{'tags'}{$tag}{'tlp'};
+      } else {
+        return;
+      }
+    }
+  } else {
+    return $self->_get_package($pkg);
+  }
+}
+
+sub _get_package {
   my ($self,$pkg) = @_;
   if (defined($self->{'tlps'}{$pkg})) {
   my $ret = $self->{'tlps'}{$pkg};
     return $self->{'tlps'}{$pkg};
   } else {
     return undef;
+  }
+}
+
+=pod
+
+=item C<< $tlpdb->media_of_package($pkg [, $tag]);
+
+returns the media type of the package. In the virtual case a tag can
+be given and the media of that repository is used, otherwise the
+media of the virtual candidate is given.
+
+=cut
+
+sub media_of_package {
+  my ($self, $pkg, $tag) = @_;
+  if ($self->is_virtual) {
+    if (defined($tag)) {
+      if (defined($self->{'tlpdbs'}{$tag})) {
+        return $self->{'tlpdbs'}{$tag}->media;
+      } else {
+        tlwarn ("tag $tag is not known.\n");
+        return;
+      }
+    } else {
+      my (undef,undef,undef,$maxtlpdb) = $self->virtual_candidate($pkg);
+      return $maxtlpdb->media;
+    }
+  } else {
+    return $self->media;
   }
 }
 
@@ -525,6 +632,34 @@ The C<list_packages> function returns the list of all included packages.
 =cut
 
 sub list_packages {
+  my $self = shift;
+  my $arg = shift;
+  my $showall = 0;
+  if (defined($arg) && ($arg eq "-all")) {
+    $showall = 1;
+  }
+  if ($self->is_virtual) {
+    if ($showall) {
+      return (sort keys %{$self->{'packages'}});
+    }
+    # we have to be careful here: If a package
+    # is only present in a subsidiary repository
+    # and the package is *not* explicitely
+    # pinned to it, it will not be installable.
+    # This is what we want. But in this case
+    # we don't want it to be listed by default.
+    #
+    my @pps;
+    for my $p (keys %{$self->{'packages'}}) {
+      push @pps, $p if (defined($self->{'packages'}{$p}{'target'}));
+    }
+    return (sort @pps);
+  } else {
+    return $self->_list_packages;
+  }
+}
+
+sub _list_packages {
   my $self = shift;
   return (sort keys %{$self->{'tlps'}});
 }
@@ -542,6 +677,11 @@ package onto package) are ignored.
 
 The next (or first) argument is the target TLPDB, then a list of
 packages.
+
+In the virtual case,
+if a package name is tagged with C<@repository-tag> then all the
+dependencies will still be expanded between all included databases.
+Only in case of .ARCH dependencies the repository-tag is sticky.
 
 We return the closure of the package list with respect to the depends
 operator. (Sorry, that was for mathematicians.)
@@ -566,7 +706,8 @@ sub expand_dependencies {
   my %install = ();
   my @archs = $totlpdb->available_architectures;
   for my $p (@_) {
-    $install{$p} = 1;
+    my ($pp, $aa) = split('@', $p);
+    $install{$pp} = (defined($aa) ? $aa : 0);;
   }
   my $changed = 1;
   while ($changed) {
@@ -575,7 +716,7 @@ sub expand_dependencies {
     ddebug("pre_select = @pre_select\n");
     for my $p (@pre_select) {
       next if ($p =~ m/^00texlive/);
-      my $pkg = $self->get_package($p);
+      my $pkg = $self->get_package($p, ($install{$p}?$install{$p}:undef));
       if (!defined($pkg)) {
         debug("W: $p is mentioned somewhere but not available, disabling\n");
         $install{$p} = 0;
@@ -601,16 +742,19 @@ sub expand_dependencies {
         if ($p_dep =~ m/^(.*)\.ARCH$/) {
           my $foo = "$1";
           foreach $a (@archs) {
-            $install{"$foo.$a"} = 1 if defined($self->get_package("$foo.$a"));
+            # install .ARCH packages from the same sub repository as the
+            # main packages
+            $install{"$foo.$a"} = $install{$foo}
+              if defined($self->get_package("$foo.$a"));
           }
         } elsif ($p_dep =~ m/^(.*)\.win32$/) {
           # a win32 package should *only* be installed if we are installing
           # the win32 arch
           if (grep(/^win32$/,@archs)) {
-            $install{$p_dep} = 1;
+            $install{$p_dep} = 0;
           }
         } else {
-          $install{$p_dep} = 1 unless $only_arch;
+          $install{$p_dep} = 0 unless $only_arch;
         }
       }
     }
@@ -622,7 +766,9 @@ sub expand_dependencies {
       $changed = 1;
     }
   }
-  return(keys %install);
+  # create return list
+  return map { $install{$_} eq "0"?$_:"$_\@" . $install{$_} } keys %install;
+  #return(keys %install);
 }
 
 =pod
@@ -634,6 +780,7 @@ containing a file named C<filename>.
 
 =cut
 
+# TODO adapt for searching in *all* tags ???
 sub find_file {
   my ($self,$fn) = @_;
   my @ret;
@@ -867,6 +1014,10 @@ installation.
 
 sub root {
   my $self = shift;
+  if ($self->is_virtual) {
+    tlwarn("cannot set/edit root of a virtual tlpdb\n");
+    return 0;
+  }
   if (@_) { $self->{'root'} = shift }
   return $self->{'root'};
 }
@@ -886,6 +1037,10 @@ special value C<__MASTER>.
 
 sub location {
   my $self = shift;
+  if ($self->is_virtual) {
+    tlwarn("cannot get location of a virtual tlpdb\n");
+    return 0;
+  }
   return "$self->{'root'}/$InfraLocation/$DatabaseName";
 }
 
@@ -936,8 +1091,14 @@ container level is set. See Options below.
 
 sub config_src_container {
   my $self = shift;
-  if (defined($self->{'tlps'}{'00texlive.config'})) {
-    foreach my $d ($self->{'tlps'}{'00texlive.config'}->depends) {
+  my $tlp;
+  if ($self->is_virtual) {
+    $tlp = $self->{'tlpdbs'}{'main'}->get_package('00texlive.config');
+  } else {
+    $tlp = $self->{'tlps'}{'00texlive.config'};
+  }
+  if (defined($tlp)) {
+    foreach my $d ($tlp->depends) {
       if ($d =~ m!^container_split_src_files/(.*)$!) {
         return "$1";
       }
@@ -957,8 +1118,14 @@ container level is set. See Options below.
 
 sub config_doc_container {
   my $self = shift;
-  if (defined($self->{'tlps'}{'00texlive.config'})) {
-    foreach my $d ($self->{'tlps'}{'00texlive.config'}->depends) {
+  my $tlp;
+  if ($self->is_virtual) {
+    $tlp = $self->{'tlpdbs'}{'main'}->get_package('00texlive.config');
+  } else {
+    $tlp = $self->{'tlps'}{'00texlive.config'};
+  }
+  if (defined($tlp)) {
+    foreach my $d ($tlp->depends) {
       if ($d =~ m!^container_split_doc_files/(.*)$!) {
         return "$1";
       }
@@ -977,8 +1144,14 @@ Returns the currently set default container format. See Options below.
 
 sub config_container_format {
   my $self = shift;
-  if (defined($self->{'tlps'}{'00texlive.config'})) {
-    foreach my $d ($self->{'tlps'}{'00texlive.config'}->depends) {
+  my $tlp;
+  if ($self->is_virtual) {
+    $tlp = $self->{'tlpdbs'}{'main'}->get_package('00texlive.config');
+  } else {
+    $tlp = $self->{'tlps'}{'00texlive.config'};
+  }
+  if (defined($tlp)) {
+    foreach my $d ($tlp->depends) {
       if ($d =~ m!^container_format/(.*)$!) {
         return "$1";
       }
@@ -997,8 +1170,14 @@ Returns the currently set release. See Options below.
 
 sub config_release {
   my $self = shift;
-  if (defined($self->{'tlps'}{'00texlive.config'})) {
-    foreach my $d ($self->{'tlps'}{'00texlive.config'}->depends) {
+  my $tlp;
+  if ($self->is_virtual) {
+    $tlp = $self->{'tlpdbs'}{'main'}->get_package('00texlive.config');
+  } else {
+    $tlp = $self->{'tlps'}{'00texlive.config'};
+  }
+  if (defined($tlp)) {
+    foreach my $d ($tlp->depends) {
       if ($d =~ m!^release/(.*)$!) {
         return "$1";
       }
@@ -1017,8 +1196,14 @@ Returns the currently allowed minimal release. See Options below.
 
 sub config_minrelease {
   my $self = shift;
-  if (defined($self->{'tlps'}{'00texlive.config'})) {
-    foreach my $d ($self->{'tlps'}{'00texlive.config'}->depends) {
+  my $tlp;
+  if ($self->is_virtual) {
+    $tlp = $self->{'tlpdbs'}{'main'}->get_package('00texlive.config');
+  } else {
+    $tlp = $self->{'tlps'}{'00texlive.config'};
+  }
+  if (defined($tlp)) {
+    foreach my $d ($tlp->depends) {
       if ($d =~ m!^minrelease/(.*)$!) {
         return "$1";
       }
@@ -1038,8 +1223,14 @@ Returns the currently set revision. See Options below.
 
 sub config_revision {
   my $self = shift;
-  if (defined($self->{'tlps'}{'00texlive.config'})) {
-    foreach my $d ($self->{'tlps'}{'00texlive.config'}->depends) {
+  my $tlp;
+  if ($self->is_virtual) {
+    $tlp = $self->{'tlpdbs'}{'main'}->get_package('00texlive.config');
+  } else {
+    $tlp = $self->{'tlps'}{'00texlive.config'};
+  }
+  if (defined($tlp)) {
+    foreach my $d ($tlp->depends) {
       if ($d =~ m!^revision/(.*)$!) {
         return "$1";
       }
@@ -1051,7 +1242,7 @@ sub config_revision {
 
 =pod
 
-=item C<< $tlpdb->sizes_of_packages ( $opt_src, $opt_doc, [ @packs ] ) >>
+=item C<< $tlpdb->sizes_of_packages ( $opt_src, $opt_doc, $ref_arch_list, [ @packs ] ) >>
 
 This function returns a reference to a hash with package names as keys
 and the sizes in bytes as values. The sizes are computed for the arguments,
@@ -1060,22 +1251,32 @@ or all packages if nothing was given.
 In case something has been computed one addition key is added C<__TOTAL__>
 which contains the total size of all packages under discussion.
 
+If the third argument is a reference to a list of architectures, then
+only the sizes for the binary packages for these architectures are used,
+otherwise all sizes for all architectures are summed up.
+
 =cut
 
 sub sizes_of_packages {
-  my ($self, $opt_src, $opt_doc, @packs) = @_;
+  my ($self, $opt_src, $opt_doc, $arch_list_ref, @packs) = @_;
   @packs || ( @packs = $self->list_packages() );
-  my $media = $self->media;
+  my @archs;
+  if (defined($arch_list_ref)) {
+    @archs = @$arch_list_ref;
+  }
+  # if nothing is passed on, then we keep @archs undefined, which means
+  # use all architectures
   my %tlpsizes;
   my %tlpobjs;
   my $totalsize;
   foreach my $p (@packs) {
     $tlpobjs{$p} = $self->get_package($p);
+    my $media = $self->media_of_package($p);
     if (!defined($tlpobjs{$p})) {
       warn "STRANGE: $p not to be found in ", $self->root;
       next;
     }
-    $tlpsizes{$p} = $self->size_of_one_package($media, $tlpobjs{$p}, $opt_src, $opt_doc);
+    $tlpsizes{$p} = $self->size_of_one_package($media, $tlpobjs{$p}, $opt_src, $opt_doc, @archs);
     $totalsize += $tlpsizes{$p};
   }
   if ($totalsize) {
@@ -1085,7 +1286,7 @@ sub sizes_of_packages {
 }
 
 sub size_of_one_package {
-  my ($self, $media, $tlpobj, $opt_src, $opt_doc) = @_;
+  my ($self, $media, $tlpobj, $opt_src, $opt_doc, @used_archs) = @_;
   my $size = 0;
   if ($media ne 'local_uncompressed') {
     # we use the container size as the measuring unit since probably
@@ -1100,7 +1301,11 @@ sub size_of_one_package {
     $size += $tlpobj->srcsize if $opt_src;
     $size += $tlpobj->docsize if $opt_doc;
     my %foo = %{$tlpobj->binsize};
-    for my $k (keys %foo) { $size += $foo{$k}; }
+    for my $k (keys %foo) { 
+      if (@used_archs && member($k, @used_archs)) {
+        $size += $foo{$k};
+      }
+    }
     # all the packages sizes are in blocks, so transfer that to bytes
     $size *= $TeXLive::TLConfig::BlockSize;
   }
@@ -1109,31 +1314,145 @@ sub size_of_one_package {
 
 =pod
 
-=item C<< $tlpdb->install_package($pkg, $dest_tlpdb, $nopostinstall, $fallbacktlpdb) >>
+=item C<< $tlpdb->install_package_files($f [, $f]) >>
+
+Install a package from a package file, i.e. a .tar.xz.
+Returns the number of packages actually installed successfully.
+
+=cut
+
+sub install_package_files {
+  my ($self, @files) = @_;
+
+  my $ret = 0;
+
+  my $opt_src = $self->option("install_srcfiles");
+  my $opt_doc = $self->option("install_docfiles");
+
+  for my $f (@files) {
+
+    # - create a tmp directory
+    my $tmpdir = TeXLive::TLUtils::tl_tmpdir();
+    # - unpack everything there
+    if (!TeXLive::TLUtils::unpack($f, $tmpdir)) {
+      tlwarn("TLPDB::install_package_files: couldn't install $f\n");
+      next;
+    }
+    # we are  still here, so the files have been unpacked properly
+    # we need now to find the tlpobj in $tmpdir/tlpkg/tlpobj/
+    my ($tlpobjfile, $anotherfile) = <$tmpdir/tlpkg/tlpobj/*.tlpobj>;
+    if (defined($anotherfile)) {
+      # we found several tlpobj files, that is not allowed, stop
+      tlwarn("TLPDB::install_package_files: several tlpobj files in $what in tlpkg/tlpobj/, stopping!\n");
+      next;
+    }
+    # - read the tlpobj from there
+    my $tlpobj = TeXLive::TLPOBJ->new;
+    $tlpobj->from_file($tlpobjfile);
+    # we didn't die in this process, so that seems to be a proper tlpobj
+    # (btw, why didn't I work on proper return values!?!)
+
+    #
+    # we are now ready for installation
+    # if this package existed before, remove it from the tlpdb
+    if ($self->get_package($tlpobj->name)) {
+      $self->remove_package($tlpobj->name);
+    }
+
+    # code partially from TLPDB->not_virtual_install_package!!!
+    my @installfiles = ();
+    my $reloc = 1 if $tlpobj->relocated;
+    foreach ($tlpobj->runfiles) { push @installfiles, $_; };
+    foreach ($tlpobj->allbinfiles) { push @installfiles, $_; };
+    if ($opt_src) { foreach ($tlpobj->srcfiles) { push @installfiles, $_; } }
+    if ($opt_doc) { foreach ($tlpobj->docfiles) { push @installfiles, $_; } }
+    # 
+    # remove the RELOC prefix, but do NOT replace it with RelocTree
+    @installfiles = map { s!^$TeXLive::TLConfig::RelocPrefix/!!; $_; } @installfiles;
+    # if the first argument of _install_package is scalar, it is the
+    # place from where files should be installed
+    if (!_install_package ($tmpdir, \@installfiles, $reloc, \@installfiles, $self)) {
+      tlwarn("TLPDB::install_package_files: couldn't install $what!\n"); 
+      next;
+    }
+    if ($tlpobj->relocated) {
+      $tlpobj->cancel_reloc_prefix;
+      $tlpobj->relocated(0);
+    }
+    my $tlpod = $self->root . "/tlpkg/tlpobj";
+    mkdirhier( $tlpod );
+    open(TMP,">$tlpod/".$tlpobj->name.".tlpobj") or
+      die("Cannot open tlpobj file for ".$tlpobj->name);
+    $tlpobj->writeout(\*TMP);
+    close(TMP);
+    $self->add_tlpobj($tlpobj);
+    $self->save;
+    TeXLive::TLUtils::announce_execute_actions("enable", $tlpobj);
+    # do the postinstallation actions
+    #
+    # Run the post installation code in the postaction tlpsrc entries
+    # in case we are on w32 and the admin did install for himself only
+    # we switch off admin mode
+    if (win32() && admin() && !$totlpdb->option("w32_multi_user")) {
+      non_admin();
+    }
+    # for now desktop_integration maps to both installation
+    # of desktop shortcuts and menu items, but we can split them later
+    &TeXLive::TLUtils::do_postaction("install", $tlpobj,
+      $self->option("file_assocs"),
+      $self->option("desktop_integration"),
+      $self->option("desktop_integration"),
+      $self->option("post_code"));
+
+    # remember that we installed this package correctly
+    $ret++;
+  }
+  return $ret;
+}
+
+
+=pod
+
+=item C<< $tlpdb->install_package($pkg, $dest_tlpdb [, $tag]) >>
 
 Installs the package $pkg into $dest_tlpdb.
+If C<$tag> is present and the tlpdb is virtual, tries to install $pkg
+from the repository tagged with $tag.
 
 =cut
 
 sub install_package {
-  my ($self, $pkg, $totlpdb, $nopostinstall, $fallbackmedia) = @_;
+  my ($self, $pkg, $totlpdb, $tag) = @_;
+  if ($self->is_virtual) {
+    if (defined($tag)) {
+      if (defined($self->{'packages'}{$pkg}{'tags'}{$tag})) {
+        return $self->{'tlpdbs'}{$tag}->install_package($pkg, $totlpdb);
+      } else {
+        tlwarn("package $pkg not found in repository $tag\n");
+        return;
+      }
+    } else {
+      my ($maxtag, $maxrev, $maxtlp, $maxtlpdb) = $self->virtual_candidate($pkg);
+      return $maxtlpdb->install_package($pkg, $totlpdb);
+    }
+  } else {
+    if (defined($tag)) {
+      tlwarn("not a virtual database, ignoring tag $tag on installation of $pkg\n");
+    }
+    return $self->not_virtual_install_package($pkg, $totlpdb);
+  }
+  return;
+}
+
+sub not_virtual_install_package {
+  my ($self, $pkg, $totlpdb) = @_;
   my $fromtlpdb = $self;
   my $ret;
   die("TLPDB not initialized, cannot find tlpdb!") unless (defined($fromtlpdb));
   my $tlpobj = $fromtlpdb->get_package($pkg);
   if (!defined($tlpobj)) {
-    if (defined($fallbackmedia)) {
-      if ($ret = $fallbackmedia->install_package($pkg,$totlpdb, $nopostinstall)) {
-        debug("installed $pkg from fallback\n");
-        return $ret;
-      } else {
-        tlwarn("$0: Cannot find package $pkg (in fallback, either)\n");
-        return 0;
-      }
-    } else {
-      tlwarn("$0: Cannot find package $pkg\n");
-      return 0;
-    }
+    tlwarn("$0: Cannot find package $pkg\n");
+    return 0;
   } else {
     my $container_src_split = $fromtlpdb->config_src_container;
     my $container_doc_split = $fromtlpdb->config_doc_container;
@@ -1181,7 +1500,7 @@ sub install_package {
         next;
       }
     } elsif (&media eq 'NET') {
-      $container = "$root/$Archive/$pkg.$DefaultContainerExtension";
+      $container = "$root/$Archive/$pkg.$TeXLive::TLConfig::DefaultContainerExtension";
     }
     $self->_install_package ($container, $reloc, \@installfiles, $totlpdb) 
       || return(0);
@@ -1255,23 +1574,21 @@ sub install_package {
     $totlpdb->save;
     # compute the return value
     TeXLive::TLUtils::announce_execute_actions("enable", $tlpobj);
-    if (!$nopostinstall) {
-      # do the postinstallation actions
-      #
-      # Run the post installation code in the postaction tlpsrc entries
-      # in case we are on w32 and the admin did install for himself only
-      # we switch off admin mode
-      if (win32() && admin() && !$totlpdb->option("w32_multi_user")) {
-        non_admin();
-      }
-      # for now desktop_integration maps to both installation
-      # of desktop shortcuts and menu items, but we can split them later
-      &TeXLive::TLUtils::do_postaction("install", $tlpobj,
-        $totlpdb->option("file_assocs"),
-        $totlpdb->option("desktop_integration"),
-        $totlpdb->option("desktop_integration"),
-        $totlpdb->option("post_code"));
+    # do the postinstallation actions
+    #
+    # Run the post installation code in the postaction tlpsrc entries
+    # in case we are on w32 and the admin did install for himself only
+    # we switch off admin mode
+    if (win32() && admin() && !$totlpdb->option("w32_multi_user")) {
+      non_admin();
     }
+    # for now desktop_integration maps to both installation
+    # of desktop shortcuts and menu items, but we can split them later
+    &TeXLive::TLUtils::do_postaction("install", $tlpobj,
+      $totlpdb->option("file_assocs"),
+      $totlpdb->option("desktop_integration"),
+      $totlpdb->option("desktop_integration"),
+      $totlpdb->option("post_code"));
   }
   return 1;
 }
@@ -1284,7 +1601,6 @@ sub install_package {
 sub _install_package {
   my ($self, $what, $reloc, $filelistref, $totlpdb) = @_;
 
-  my $media = $self->media;
   my $target = $totlpdb->root;
   my $tempdir = "$target/temp";
 
@@ -1292,15 +1608,26 @@ sub _install_package {
 
   # we assume that $::progs has been set up!
   my $wget = $::progs{'wget'};
-  my $xzdec = $::progs{'xzdec'};
+  my $xzdec = TeXLive::TLUtils::quotify_path_with_spaces($::progs{'xzdec'});
   if (!defined($wget) || !defined($xzdec)) {
     tlwarn("_install_package: programs not set up properly, strange.\n");
     return(0);
   }
 
   if (ref $what) {
-    # we are getting a ref to a list of files, so install from DVD
-    my $root = $self->root;
+    # determine the root from where we install
+    # if the first argument $self is a string, then it should be the
+    # root from where to install the files, otherwise it should be 
+    # a TLPDB object (installation from DVD)
+    my $root;
+    if (!ref($self)) {
+      $root = $self;
+    } else {
+      $root = $self->root;
+    }
+    # if we are installing a reloc, add the RelocTree to the target
+    $target .= "/$TeXLive::TLConfig::RelocTree" if $reloc;
+
     foreach my $file (@$what) {
       # @what is taken, not @filelist!
       # is this still needed?
@@ -1311,78 +1638,16 @@ sub _install_package {
     # we always assume that copy will work
     return(1);
   } elsif ($what =~ m,\.tar(\.xz)?$,) {
-    my $type = defined($1) ? "xz" : "tar";
-      
     $target .= "/$TeXLive::TLConfig::RelocTree" if $reloc;
-
-    # this is the case when we install from local_compressed or the NET, or a backup
-    #
-    # in all other cases we create temp files .tar.xz (or use the present
-    # one), xzdec them, and then call tar
-
-    my $fn = basename($what);
-    my $pkg = $fn;
-    $pkg =~ s/\.tar(\.xz)?$//;
-    mkdirhier("$tempdir");
-    my $tarfile;
-    my $remove_tarfile = 1;
-    if ($type eq "xz") {
-      my $xzfile = "$tempdir/$fn";
-      $tarfile  = "$tempdir/$fn"; $tarfile =~ s/\.xz$//;
-      my $xzfile_quote = $xzfile;
-      my $tarfile_quote = $tarfile;
-      my $target_quote = $target;
-      if (win32()) {
-        $xzfile =~ s!/!\\!g;
-        $xzfile_quote = "\"$xzfile\"";
-        $tarfile =~ s!/!\\!g;
-        $tarfile_quote = "\"$tarfile\"";
-        $target =~ s!/!\\!g;
-        $target_quote = "\"$target\"";
-      }
-      if ($what =~ m,http://|ftp://,) {
-        # we are installing from the NET
-        # download the file and put it into temp
-        if (!download_file($what, $xzfile) || (! -r $xzfile)) {
-          tlwarn("Downloading \n");
-          tlwarn("   $what\n");
-          tlwarn("did not succeed, please retry.\n");
-          unlink($tarfile, $xzfile);
-          return(0);
-        }
-      } else {
-        # we are installing from local compressed files
-        # copy it to temp
-        TeXLive::TLUtils::copy($what, $tempdir);
-      }
-      debug("un-xzing $xzfile to $tarfile\n");
-      system("$xzdec < $xzfile_quote > $tarfile_quote");
-      if (! -f $tarfile) {
-        tlwarn("_install_package: Unpacking $xzfile failed, please retry.\n");
-        unlink($tarfile, $xzfile);
-        return(0);
-      }
-      unlink($xzfile);
-    } else {
-      $tarfile = "$tempdir/$fn";
-      if ($what =~ m,http://|ftp://,) {
-        if (!download_file($what, $tarfile) || (! -r $tarfile)) {
-          tlwarn("Downloading \n");
-          tlwarn("   $what\n");
-          tlwarn("failed, please retry.\n");
-          unlink($tarfile);
-          return(0);
-        }
-      } else {
-        $tarfile = $what;
-        $remove_tarfile = 0;
-      }
+    my $pkg = TeXLive::TLUtils::unpack($what, $target);
+    if (!$pkg) {
+      tlwarn("TLPDB::_install_package: couldn't unpack $what to $target\n");
+      return(0);
     }
-    my $ret = TeXLive::TLUtils::untar($tarfile, $target, $remove_tarfile);
     # remove the $pkg.tlpobj, we recreate it anyway again
     unlink ("$target/tlpkg/tlpobj/$pkg.tlpobj") 
       if (-r "$target/tlpkg/tlpobj/$pkg.tlpobj");
-    return $ret;
+    return(1);
   } else {
     tlwarn("_install_package: Don't know how to install $what\n");
     return(0);
@@ -1393,7 +1658,7 @@ sub _install_package {
 
 =item << $tlpdb->remove_package($pkg, %options) >>
 
-removes a single pacakge with all the files and the entry in the db.
+removes a single package with all the files and the entry in the db.
 
 =cut
 
@@ -1524,7 +1789,7 @@ sub remove_package {
     # the postaction code part cannot be evaluated now since the
     # files are already removed.
     # Again, desktop integration maps to desktop and menu links
-    if (!$nopostinstall) {
+    if (!$opts{'nopostinstall'}) {
       &TeXLive::TLUtils::do_postaction("remove", $tlp,
         $localtlpdb->option("file_assocs"),
         $localtlpdb->option("desktop_integration"),
@@ -1556,7 +1821,12 @@ sub _set_setting_value {
 sub _set_value_pkg {
   my ($self,$pkgname,$pre,$key,$value) = @_;
   my $k = "$pre$key";
-  my $pkg = $self->{'tlps'}{$pkgname};
+  my $pkg;
+  if ($self->is_virtual) {
+    $pkg = $self->{'tlpdbs'}{'main'}->get_package($pkgname);
+  } else {
+    $pkg = $self->{'tlps'}{$pkgname};
+  }
   my @newdeps;
   if (!defined($pkg)) {
     $pkg = new TeXLive::TLPOBJ;
@@ -1594,8 +1864,14 @@ sub _setting_value {
 sub _value_pkg {
   my ($self,$pkg,$pre,$key) = @_;
   my $k = "$pre$key";
-  if (defined($self->{'tlps'}{$pkg})) {
-    foreach my $d ($self->{'tlps'}{$pkg}->depends) {
+  my $tlp;
+  if ($self->is_virtual) {
+    $tlp = $self->{'tlpdbs'}{'main'}->get_package($pkg);
+  } else {
+    $tlp = $self->{'tlps'}{$pkg};
+  }
+  if (defined($tlp)) {
+    foreach my $d ($tlp->depends) {
       if ($d =~ m!^$k:(.*)$!) {
         return "$1";
       }
@@ -1708,7 +1984,12 @@ sub _keyshash {
   my ($self, $pre, $hr) = @_;
   my @allowed = keys %$hr;
   my %ret;
-  my $pkg = $self->{'tlps'}{'00texlive.installation'};
+  my $pkg;
+  if ($self->is_virtual) {
+    $pkg = $self->{'tlpdbs'}{'main'}->get_package('00texlive.installation');
+  } else {
+    $pkg = $self->{'tlps'}{'00texlive.installation'};
+  }
   if (defined($pkg)) {
     foreach my $d ($pkg->depends) {
       if ($d =~ m!^$pre([^:]*):(.*)!) {
@@ -1857,6 +2138,365 @@ sub language_lua_lines {
 
 =back
 
+=head1 VIRTUAL DATABASES
+
+The purpose of virtual databases is to collect several data sources
+and present them in one way. The normal functions will always return
+the best candidate for the set of functions.
+
+More docs to be written
+
+=cut
+
+#
+# packages are saved:
+# $self->{'packages'}{$pkgname}{'tags'}{$tag}{'revision'} = $rev
+# $self->{'packages'}{$pkgname}{'tags'}{$tag}{'tlp'} = $tlp
+# $self->{'packages'}{$pkgname}{'target'} = $target_tag
+#
+
+sub is_virtual {
+  my $self = shift;
+  if (defined($self->{'virtual'}) && $self->{'virtual'}) {
+    return 1;
+  }
+  return 0;
+}
+
+sub make_virtual {
+  my $self = shift;
+  if (!$self->is_virtual) {
+    if ($self->list_packages) {
+      tlerror("Cannot convert a initialized tlpdb to virtual for now!\n");
+      return 0;
+    }
+    $self->{'virtual'} = 1;
+  }
+  return 1;
+}
+
+sub virtual_add_tlpdb {
+  my ($self, $tlpdb, $tag) = @_;
+  if (!$self->is_virtual) {
+    tlerror("Cannot add tlpdb to a non-virtual tlpdb!\n");
+    return 0;
+  }
+  $self->{'tlpdbs'}{$tag} = $tlpdb;
+  for my $p ($tlpdb->list_packages) {
+    my $tlp = $tlpdb->get_package($p);
+    $self->{'packages'}{$p}{'tags'}{$tag}{'revision'} = $tlp->revision;
+    $self->{'packages'}{$p}{'tags'}{$tag}{'tlp'} = $tlp;
+  }
+  $self->check_evaluate_pinning();
+  return 1;
+}
+
+sub virtual_remove_tlpdb {
+  my ($self, $tag) = @_;
+  if (!$self->is_virtual) {
+    tlerror("Cannot remove tlpdb from a non-virtual tlpdb!\n");
+    return 0;
+  }
+  if (!defined($self->{'tlpdbs'}{$tag})) {
+    tlwarn("TLPDB virtual_remove_tlpdb: unknown tag $tag\n");
+    return 0;
+  }
+  for my $p ($self->{'tlpdbs'}{$tag}->list_packages) {
+    delete $self->{'packages'}{$p}{'tags'}{$tag};
+  }
+  delete $self->{'tlpdbs'}{$tag};
+  $self->check_evaluate_pinning();
+  return 1;
+}
+
+sub virtual_get_package {
+  my ($self, $pkg, $tag) = @_;
+  if (defined($self->{'packages'}{$pkg}{'tags'}{$tag})) {
+    return $self->{'packages'}{$pkg}{'tags'}{$tag}{'tlp'};
+  } else {
+    tlwarn("pkg $pkg not found in tag $tag\n");
+    return;
+  }
+}
+
+=item C<< $tlpdb->candidates ( $pkg ) >>
+
+Returns the list of candidates for the given package in the
+format
+
+  tag/revision
+
+If the returned list is empty, then the database was not virtual and
+no install candidate was found.
+
+If the returned list contains undef as first element, the database
+is virtual, and no install candidate was found.
+
+The remaining elements in the list are all repositories that provide
+that package.
+
+Note that there might not be an install candidate, but still the
+package is provided by a sub-repository. This can happen if a package
+is present only in the sub-repository and there is no explicit pin
+for that package in the pinning file.
+
+=cut
+
+sub is_repository {
+  my $self = shift;
+  my $tag = shift;
+  if (!$self->is_virtual) {
+    return ( ($tag eq $self->{'root'}) ? 1 : 0 );
+  }
+  return ( defined($self->{'tlpdbs'}{$tag}) ? 1 : 0 );
+}
+
+
+# returns a list of tag/rev
+sub candidates {
+  my $self = shift;
+  my $pkg = shift;
+  my @ret = ();
+  if ($self->is_virtual) {
+    if (defined($self->{'packages'}{$pkg})) {
+      my $t = $self->{'packages'}{$pkg}{'target'};
+      if (defined($t)) {
+        push @ret, "$t/" . $self->{'packages'}{$pkg}{'tags'}{$t}{'revision'};
+      } else {
+        $t = "";
+        # no target found, but maybe available somewhere else,
+        # we return undef as first one
+        push @ret, undef;
+      }
+      # make sure that we always check for main as repo
+      my @repos = keys %{$self->{'packages'}{$pkg}};
+      for my $r (sort keys %{$self->{'packages'}{$pkg}{'tags'}}) {
+        push @ret, "$r/" . $self->{'packages'}{$pkg}{'tags'}{$r}{'revision'}
+          if ($t ne $r);
+      }
+    }
+  } else {
+    my $tlp = $self->get_package($pkg);
+    if (defined($tlp)) {
+      push @ret, "main/" . $tlp->revision;
+    }
+  }
+  return @ret;
+}
+
+=item C<< $tlpdb->candidate ( ) >>
+
+Returns either a list of four undef, if no install candidate is found,
+or the following information on the install candidate as list: the tag
+name of the repository, the revision number of the package in the
+candidate repository, the tlpobj of the package in the candidate
+repository, and the candidate repository's TLPDB itself.
+
+=cut
+
+#
+sub virtual_candidate {
+  my ($self, $pkg) = @_;
+  my $t = $self->{'packages'}{$pkg}{'target'};
+  if (defined($t)) {
+    return ($t, $self->{'packages'}{$pkg}{'tags'}{$t}{'revision'},
+      $self->{'packages'}{$pkg}{'tags'}{$t}{'tlp'}, $self->{'tlpdbs'}{$t});
+  }
+  return(undef,undef,undef,undef);
+}
+
+=item C<< $tlpdb->virtual_pinning ( [@pinning_data] ) >>
+
+Without any argument returns the pinning data, or undef. Be reminded that an
+empty pinning data will behave differently to no pinning data.
+
+With an argument it must be a list of pins, where each pin
+must be one hash ref with the following keys:
+C<repo> the tag of the repository,
+C<glob> the glob for matching a package
+C<re> the regexp which corresponds to the glob
+C<line> the line where the glob was found (for warning purpose).
+
+=cut
+
+sub virtual_pinning {
+  my $self = shift;
+  my (@pins) = @_;
+  if (!$self->is_virtual) {
+    tlerror("Not-virtual databases cannot have pinning data.\n");
+    return 0;
+  }
+  if (!@pins) {
+    if (!defined($self->{'pindata'})) {
+      my @foo = ();
+      $self->{'pindata'} = \@foo;
+    }
+    return (@{$self->{'pindata'}});
+  } else {
+    $self->{'pindata'} = \@pins;
+    $self->check_evaluate_pinning();
+    return ($self->{'pindata'});
+  }
+}
+
+#
+# current format:
+# <repo>:<pkg_glob>[,<pkg_glob>,...][:<options>]
+# only supported options for now is
+#   revision
+# meaning that, if for the selected package there is no other
+# "non-revision" pinning, then all repo/package versions are compared
+# using normal revision comparison, and the biggest revision number wins.
+# That allows you to have the same package in several repos:
+#   repo1:foo:revision
+#   repo2:foo:revision
+#   repo1:*
+#   repo2:*
+# means that:
+# for package "foo" the revision numbers of "foo" in the repos "repo1",
+# "repo2", and "main" are numerically compared and biggest number wins.
+# for all other packages of "repo1" and "repo2", other other repositories
+# are not considered.
+#
+# NOT IMPLEMENTED YET!!!
+#
+# $pin{'repo'} = $repo;
+# $pin{'glob'} = $glob;
+# $pin{'re'} = $re;
+# $pin{'line'} = $line; # for debug/warning purpose
+sub make_pin_data_from_line {
+  my $self = shift;
+  my $l = shift;
+  my ($a, $b, $c) = split(/:/, $l);
+  my @ret;
+  my %m;
+  $m{'repo'} = $a;
+  $m{'line'} = $l;
+  if (defined($c)) {
+    $m{'options'} = $c;
+  }
+  # split the package globs
+  for (split(/,/, $b)) {
+    # remove leading and terminal white space
+    s/^\s*//;
+    s/\s*$//;
+    my %mm = %m;
+    $mm{'glob'} = $_;
+    $mm{'re'} = glob_to_regex($_);
+    push @ret, \%mm;
+  }
+  return @ret;
+}
+
+sub check_evaluate_pinning {
+  my $self = shift;
+  my @pins = (defined($self->{'pindata'}) ? @{$self->{'pindata'}} : ());
+  #
+  # run through the pin lines and make sure that all the conditions
+  # and requirements are obeyed
+  my %pkgs = %{$self->{'packages'}};
+  # main:*
+  my ($mainpin) = $self->make_pin_data_from_line("main:*");
+  # the default main:* is always considered to be matched
+  $mainpin->{'hit'} = 1;
+  push @pins, $mainpin;
+  for my $pkg (keys %pkgs) {
+    PINS: for my $pp (@pins) {
+      my $pre = $pp->{'re'};
+      if (($pkg =~ m/$pre/) &&
+          (defined($self->{'packages'}{$pkg}{'tags'}{$pp->{'repo'}}))) {
+        $self->{'packages'}{$pkg}{'target'} = $pp->{'repo'};
+        # register that this pin was hit
+        $pp->{'hit'} = 1;
+        last PINS;
+      }
+    }
+  }
+  # check that all pinning lines where hit
+  for my $p (@pins) {
+    next if defined($p->{'hit'});
+    tlwarn("pinning warning: the entry in line\n  ", $p->{'line'},
+           "\nconcerning the package pattern ", $p->{'glob'},
+           "\nis not matched by any package!\n");
+  }
+}
+
+
+# implementation copied from Text/Glob.pm (copyright Richard Clamp).
+# changes made:
+# remove $strict_leading_dot and $strict_wildcard_slash if calls
+# and execute the code unconditionally, as we do not change the
+# default settings of 1 of these two variables.
+sub glob_to_regex {
+    my $glob = shift;
+    my $regex = glob_to_regex_string($glob);
+    return qr/^$regex$/;
+}
+
+sub glob_to_regex_string
+{
+    my $glob = shift;
+    my ($regex, $in_curlies, $escaping);
+    local $_;
+    my $first_byte = 1;
+    for ($glob =~ m/(.)/gs) {
+        if ($first_byte) {
+            $regex .= '(?=[^\.])' unless $_ eq '.';
+            $first_byte = 0;
+        }
+        if ($_ eq '/') {
+            $first_byte = 1;
+        }
+        if ($_ eq '.' || $_ eq '(' || $_ eq ')' || $_ eq '|' ||
+            $_ eq '+' || $_ eq '^' || $_ eq '$' || $_ eq '@' || $_ eq '%' ) {
+            $regex .= "\\$_";
+        }
+        elsif ($_ eq '*') {
+            $regex .= $escaping ? "\\*" : "[^/]*";
+        }
+        elsif ($_ eq '?') {
+            $regex .= $escaping ? "\\?" : "[^/]";
+        }
+        elsif ($_ eq '{') {
+            $regex .= $escaping ? "\\{" : "(";
+            ++$in_curlies unless $escaping;
+        }
+        elsif ($_ eq '}' && $in_curlies) {
+            $regex .= $escaping ? "}" : ")";
+            --$in_curlies unless $escaping;
+        }
+        elsif ($_ eq ',' && $in_curlies) {
+            $regex .= $escaping ? "," : "|";
+        }
+        elsif ($_ eq "\\") {
+            if ($escaping) {
+                $regex .= "\\\\";
+                $escaping = 0;
+            }
+            else {
+                $escaping = 1;
+            }
+            next;
+        }
+        else {
+            $regex .= $_;
+            $escaping = 0;
+        }
+        $escaping = 0;
+    }
+    print "# $glob $regex\n" if debug;
+
+    return $regex;
+}
+
+sub match_glob {
+    print "# ", join(', ', map { "'$_'" } @_), "\n" if debug;
+    my $glob = shift;
+    my $regex = glob_to_regex $glob;
+    local $_;
+    grep { $_ =~ $regex } @_;
+}
+
 =pod
 
 =head1 OPTIONS
@@ -1918,4 +2558,4 @@ GNU General Public License Version 2 or later.
 ### tab-width: 2
 ### indent-tabs-mode: nil
 ### End:
-# vim:set tabstop=2 expandtab: #
+# vim:set tabstop=2 expandtab autoindent: #

@@ -1,12 +1,12 @@
-# $Id: TLUtils.pm 22688 2011-05-30 19:42:46Z siepo $
+# $Id: TLUtils.pm 26663 2012-05-26 18:07:36Z karl $
 # TeXLive::TLUtils.pm - the inevitable utilities for TeX Live.
-# Copyright 2007, 2008, 2009, 2010, 2011 Norbert Preining, Reinhard Kotucha
+# Copyright 2007-2012 Norbert Preining, Reinhard Kotucha
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLUtils;
 
-my $svnrev = '$Revision: 22688 $';
+my $svnrev = '$Revision: 26663 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -62,6 +62,7 @@ C<TeXLive::TLUtils> -- utilities used in the TeX Live infrastructure
   TeXLive::TLUtils::setup_programs($bindir, $platform);
   TeXLive::TLUtils::tlcmp($file, $file);
   TeXLive::TLUtils::nulldev();
+  TeXLive::TLUtils::get_full_line($fh);
 
 =head2 Installer Functions
 
@@ -90,6 +91,7 @@ C<TeXLive::TLUtils> -- utilities used in the TeX Live infrastructure
   TeXLive::TLUtils::member($item, @list);
   TeXLive::TLUtils::merge_into(\%to, \%from);
   TeXLive::TLUtils::texdir_check($texdir);
+  TeXLive::TLUtils::quotify_path_with_spaces($path);
   TeXLive::TLUtils::conv_to_w32_path($path);
   TeXLive::TLUtils::native_slashify($internal_path);
   TeXLive::TLUtils::forward_slashify($path_from_user);
@@ -99,6 +101,7 @@ C<TeXLive::TLUtils> -- utilities used in the TeX Live infrastructure
   TeXLive::TLUtils::compare_tlpobjs($tlpA, $tlpB);
   TeXLive::TLUtils::compare_tlpdbs($tlpdbA, $tlpdbB);
   TeXLive::TLUtils::report_tlpdb_differences(\%ret);
+  TeXLive::TLUtils::tlnet_disabled_packages($root);
   TeXLive::TLUtils::mktexupd();
 
 =head1 DESCRIPTION
@@ -156,14 +159,17 @@ BEGIN {
     &texdir_check
     &member
     &quotewords
+    &quotify_path_with_spaces
     &conv_to_w32_path
     &native_slashify
     &forward_slashify
-    &conv_to_w32_path
     &untar
+    &unpack
     &merge_into
     &give_ctan_mirror
     &give_ctan_mirror_base
+    &create_mirror_list
+    &extract_mirror_entry
     &tlmd5
     &xsystem
     &run_cmd
@@ -180,6 +186,7 @@ BEGIN {
     &setup_persistent_downloads
     &mktexupd
     &nulldev
+    &get_full_line
   );
   @EXPORT = qw(setup_programs download_file process_logging_options
                tldie tlwarn info log debug ddebug dddebug debug_hash
@@ -254,38 +261,42 @@ C</.*-(.*$)/> as a last resort and hope it provides something useful.
 =cut
 
 sub platform_name {
-      my ($guessed_platform) = @_;
+  my ($guessed_platform) = @_;
 
-      $guessed_platform =~ s/^x86_64-(.*-k?)freebsd/amd64-$1freebsd/;
-      my $CPU; # CPU type as reported by config.guess.
-      my $OS;  # O/S type as reported by config.guess.
-      ($CPU = $guessed_platform) =~ s/(.*?)-.*/$1/;
-      $CPU =~ s/^alpha(.*)/alpha/;   # alphaev56 or whatever
-      $CPU =~ s/powerpc64/powerpc/;  # we don't distinguish ppc64
+  $guessed_platform =~ s/^x86_64-(.*-k?)freebsd/amd64-$1freebsd/;
+  my $CPU; # CPU type as reported by config.guess.
+  my $OS;  # O/S type as reported by config.guess.
+  ($CPU = $guessed_platform) =~ s/(.*?)-.*/$1/;
+  $CPU =~ s/^alpha(.*)/alpha/;   # alphaev whatever
+  $CPU =~ s/armv7l/armel/;       # arm whatever
+  $CPU =~ s/powerpc64/powerpc/;  # don't distinguish ppc64
+  $CPU =~ s/sparc64/sparc/;      # don't distinguish sparc64
+  $CPU =~ s/mips64el/mipsel/;    # don't distinguish mips64 and 32 el
 
-      my @OSs = qw(aix cygwin darwin freebsd hpux irix
-                   kfreebsd linux netbsd openbsd solaris);
-      for my $os (@OSs) {
-        # Match word boundary at the beginning of the os name so that
-        #   freebsd and kfreebsd are distinguished.
-        # Do not match word boundary at the end of the os so that
-        #   solaris2 is matched.
-        $OS = $os if $guessed_platform =~ /\b$os/;
-      }
-      if ($OS eq "darwin") {
-        # We never want to guess x86_64-darwin even if config.guess
-        # does, because Leopard can be 64-bit but our x86_64-darwin
-        # binaries will only run on Snow Leopard.
-        $CPU = "universal";
-      } elsif ($CPU =~ /^i.86$/) {
-        $CPU = "i386";  # 586, 686, whatever
-      }
+  my @OSs = qw(aix cygwin darwin freebsd hpux irix
+               kfreebsd linux netbsd openbsd solaris);
+  for my $os (@OSs) {
+    # Match word boundary at the beginning of the os name so that
+    #   freebsd and kfreebsd are distinguished.
+    # Do not match word boundary at the end of the os so that
+    #   solaris2 is matched.
+    $OS = $os if $guessed_platform =~ /\b$os/;
+  }
+  
+  if ($OS eq "darwin") {
+    # We never want to guess x86_64-darwin even if config.guess
+    # does, because Leopard can be 64-bit but our x86_64-darwin
+    # binaries will only run on Snow Leopard.
+    $CPU = "universal";
+  } elsif ($CPU =~ /^i.86$/) {
+    $CPU = "i386";  # 586, 686, whatever
+  }
 
-      unless (defined $OS) {
-        ($OS = $guessed_platform) =~ s/.*-(.*)/$1/;
-      }
+  if (! defined $OS) {
+    ($OS = $guessed_platform) =~ s/.*-(.*)/$1/;
+  }
 
-      return "$CPU-$OS";
+  return "$CPU-$OS";
 }
 
 =item C<platform_desc($platform)>
@@ -302,12 +313,13 @@ sub platform_desc {
     'alpha-linux'      => 'DEC Alpha with GNU/Linux',
     'alphaev5-osf'     => 'DEC Alphaev5 OSF',
     'amd64-freebsd'    => 'x86_64 with FreeBSD',
-    'amd64-kfreebsd'   => 'x86_64 with GNU/FreeBSD',
+    'amd64-kfreebsd'   => 'x86_64 with GNU/kFreeBSD',
+    'armel-linux'      => 'ARM with GNU/Linux',
     'hppa-hpux'        => 'HP-UX',
     'i386-cygwin'      => 'Intel x86 with Cygwin',
     'i386-darwin'      => 'Intel x86 with MacOSX/Darwin',
     'i386-freebsd'     => 'Intel x86 with FreeBSD',
-    'i386-kfreebsd'    => 'Intel x86 with GNU/FreeBSD',
+    'i386-kfreebsd'    => 'Intel x86 with GNU/kFreeBSD',
     'i386-openbsd'     => 'Intel x86 with OpenBSD',
     'i386-netbsd'      => 'Intel x86 with NetBSD',
     'i386-linux'       => 'Intel x86 with GNU/Linux',
@@ -345,9 +357,8 @@ currently based on the value of Perl's C<$^O> variable.
 
 =cut
 
-sub win32
-{
-  if ($^O=~/^MSWin(32|64)$/i) {
+sub win32 {
+  if ($^O =~ /^MSWin/i) {
     return 1;
   } else {
     return 0;
@@ -466,8 +477,7 @@ C<chdir($dir)> or die.
 
 =cut
 
-sub xchdir
-{
+sub xchdir {
   my ($dir) = @_;
   chdir($dir) || die "$0: chdir($dir) failed: $!";
   ddebug("xchdir($dir) ok\n");
@@ -480,8 +490,7 @@ Run C<system(@args)> and die if unsuccessful.
 
 =cut
 
-sub xsystem
-{
+sub xsystem {
   my (@args) = @_;
   ddebug("running system(@args)\n");
   my $retval = system(@args);
@@ -868,8 +877,7 @@ that is a fatal error.
 
 =cut
 
-sub copy
-{
+sub copy {
   my $infile = shift;
   my $filemode = 0;
   if ($infile eq "-f") { # second argument is a file
@@ -989,8 +997,7 @@ C</absolute/path/to/dir1>.
 
 =cut
 
-sub collapse_dirs
-{
+sub collapse_dirs {
   my (@files) = @_;
   my @ret = ();
   my %by_dir;
@@ -1059,8 +1066,7 @@ returns all the directories from which all content will be removed
 #   case put that directory into the removal list
 # - return this removal list
 #
-sub removed_dirs
-{
+sub removed_dirs {
   my (@files) = @_;
   my %removed_dirs;
   my %by_dir;
@@ -1369,7 +1375,7 @@ sub install_package {
 
   # we assume that $::progs has been set up!
   my $wget = $::progs{'wget'};
-  my $xzdec = $::progs{'xzdec'};
+  my $xzdec = quotify_path_with_spaces($::progs{'xzdec'});
   if (!defined($wget) || !defined($xzdec)) {
     tlwarn("install_package: wget/xzdec programs not set up properly.\n");
     return 0;
@@ -1563,7 +1569,7 @@ sub _do_postaction_fileassoc {
     tlwarn("filetype of fileassoc postaction not given\n");
     return 0;
   }
-  my $filetype = $keyval{'filetype'};
+  my $filetype = $keyval{'filetype'}.'.'.$ReleaseYear;
 
   &log("postaction $how fileassoc for " . $tlpobj->name .
     ": $extension, $filetype\n");
@@ -1594,7 +1600,7 @@ sub _do_postaction_filetype {
     tlwarn("name of filetype postaction not given\n");
     return 0;
   }
-  my $name = $keyval{'name'};
+  my $name = $keyval{'name'}.'.'.$ReleaseYear;
 
   # cmd can be an arbitrary string
   if (!defined($keyval{'cmd'})) {
@@ -1644,7 +1650,7 @@ sub _do_postaction_progid {
     tlwarn("filetype of progid postaction not given\n");
     return 0;
   }
-  my $filetype = $keyval{'filetype'};
+  my $filetype = $keyval{'filetype'}.'.'.$ReleaseYear;
 
   &log("postaction $how progid for " . $tlpobj->name .
     ": $extension, $filetype\n");
@@ -1823,7 +1829,7 @@ after all packages have been unpacked.
 =cut
 
 sub announce_execute_actions {
-  my ($type, $tlp) = @_;
+  my ($type, $tlp, $what) = @_;
   # do simply return immediately if execute actions are suppressed
   return if $::no_execute_actions;
 
@@ -1835,6 +1841,14 @@ sub announce_execute_actions {
     $::files_changed = 1;
     return;
   }
+  if (defined($type) && ($type eq "latex-updated")) {
+    $::latex_updated = 1;
+    return;
+  }
+  if (defined($type) && ($type eq "tex-updated")) {
+    $::tex_updated = 1;
+    return;
+  }
   if (!defined($type) || (($type ne "enable") && ($type ne "disable"))) {
     die "announce_execute_actions: enable or disable, not type $type";
   }
@@ -1842,22 +1856,28 @@ sub announce_execute_actions {
   if ($tlp->runfiles || $tlp->srcfiles || $tlp->docfiles) {
     $::files_changed = 1;
   }
+  $what = "map format hyphen" if (!defined($what));
   foreach my $e ($tlp->executes) {
-    if ($e =~ m/^add((Mixed)?Map)\s+([^\s]+)\s*$/) {
-      $::execute_actions{$type}{'maps'}{$3} = "$1";
+    if ($e =~ m/^add((Mixed|Kanji)?Map)\s+([^\s]+)\s*$/) {
+      # save the refs as we have another =~ grep in the following lines
+      my $a = $1;
+      my $b = $3;
+      $::execute_actions{$type}{'maps'}{$b} = $a if ($what =~ m/map/);
     } elsif ($e =~ m/^AddFormat\s+(.*)\s*$/) {
       my %r = TeXLive::TLUtils::parse_AddFormat_line("$1");
       if (defined($r{"error"})) {
         tlwarn ("$r{'error'} in parsing $e for return hash\n");
       } else {
-        $::execute_actions{$type}{'formats'}{$r{'name'}} = \%r;
+        $::execute_actions{$type}{'formats'}{$r{'name'}} = \%r
+          if ($what =~ m/format/);
       }
     } elsif ($e =~ m/^AddHyphen\s+(.*)\s*$/) {
       my %r = TeXLive::TLUtils::parse_AddHyphen_line("$1");
       if (defined($r{"error"})) {
         tlwarn ("$r{'error'} in parsing $e for return hash\n");
       } else {
-        $::execute_actions{$type}{'hyphens'}{$r{'name'}} = \%r;
+        $::execute_actions{$type}{'hyphens'}{$r{'name'}} = \%r
+          if ($what =~ m/hyphen/);
       }
     } else {
       tlwarn("Unknown execute $e in ", $tlp->name, "\n");
@@ -1887,6 +1907,11 @@ sub add_link_dir_dir {
     chomp (@files = `ls "$from"`);
     my $ret = 1;
     for my $f (@files) {
+      # skip certain dangerous entries that should never be linked somewhere
+      if ($f eq "man") {
+        debug("not linking man into $to.\n");
+        next;
+      }
       unlink("$to/$f");
       if (system("ln -s \"$from/$f\" \"$to\"")) {
         tlwarn("Linking $f from $from to $to failed: $!\n");
@@ -1908,6 +1933,10 @@ sub remove_link_dir_dir {
     my $ret = 1;
     foreach my $f (@files) {
       next if (! -r "$to/$f");
+      if ($f eq "man") {
+        debug("not considering man in $to, it should not be from us!\n");
+        next;
+      }
       if ((-l "$to/$f") &&
           (readlink("$to/$f") =~ m;^$from/;)) {
         $ret = 0 unless unlink("$to/$f");
@@ -1918,7 +1947,7 @@ sub remove_link_dir_dir {
     }
     # trry to remove the destination directory, it might be empty and
     # we might have write permissions, ignore errors
-    `rmdir "$to" 2>/dev/null`;
+    # `rmdir "$to" 2>/dev/null`;
     return $ret;
   } else {
     tlwarn ("destination $to not writable, no removal of links done!\n");
@@ -1958,7 +1987,7 @@ sub add_remove_symlinks {
         $errors++ unless remove_link_dir_dir($mandir, "$sys_man/$m");
       }
     }
-    `rmdir "$sys_man" 2>/dev/null` if ($mode eq "remove");
+    # `rmdir "$sys_man" 2>/dev/null` if ($mode eq "remove");
   } else {
     tlwarn("destination of man symlink $sys_man not writable, "
       . "cannot $mode symlinks.\n");
@@ -2038,12 +2067,112 @@ sub w32_remove_from_path {
   TeXLive::TLWinGoo::adjust_reg_path_for_texlive('remove', $bindir, $mode);
 }
 
+=pod
+
+=item C<unpack($what, $targetdir>
+
+If necessary, downloads C$what>, and then unpacks it into C<$targetdir>.
+Returns the name of the unpacked package (determined from the name of C<$what>)
+in case of success, otherwise undefined.
+
+=cut
+
+sub unpack {
+  my ($what, $target) = @_;
+
+  if (!defined($what)) {
+    tlwarn("TLUtils::unpack: nothing to unpack!\n");
+    return;
+  }
+
+  # we assume that $::progs has been set up!
+  my $wget = $::progs{'wget'};
+  my $xzdec = TeXLive::TLUtils::quotify_path_with_spaces($::progs{'xzdec'});
+  if (!defined($wget) || !defined($xzdec)) {
+    tlwarn("_install_package: programs not set up properly, strange.\n");
+    return;
+  }
+
+  my $type;
+  if ($what =~ m,\.tar(\.xz)?$,) {
+    $type = defined($what) ? "xz" : "tar";
+  } else {
+    tlwarn("TLUtils::unpack: don't know how to unpack this: $what\n");
+    return;
+  }
+
+  my $tempdir = tl_tmpdir();
+
+  # we are still here, so something was handed in and we have either .tar or .tar.xz
+  my $fn = basename($what);
+  my $pkg = $fn;
+  $pkg =~ s/\.tar(\.xz)?$//;
+  my $tarfile;
+  my $remove_tarfile = 1;
+  if ($type eq "xz") {
+    my $xzfile = "$tempdir/$fn";
+    $tarfile  = "$tempdir/$fn"; $tarfile =~ s/\.xz$//;
+    my $xzfile_quote = $xzfile;
+    my $tarfile_quote = $tarfile;
+    my $target_quote = $target;
+    if (win32()) {
+      $xzfile =~ s!/!\\!g;
+      $tarfile =~ s!/!\\!g;
+      $target =~ s!/!\\!g;
+    }
+    $xzfile_quote = "\"$xzfile\"";
+    $tarfile_quote = "\"$tarfile\"";
+    $target_quote = "\"$target\"";
+    if ($what =~ m,http://|ftp://,) {
+      # we are installing from the NET
+      # download the file and put it into temp
+      if (!download_file($what, $xzfile) || (! -r $xzfile)) {
+        tlwarn("Downloading \n");
+        tlwarn("   $what\n");
+        tlwarn("did not succeed, please retry.\n");
+        unlink($tarfile, $xzfile);
+        return;
+      }
+    } else {
+      # we are installing from local compressed files
+      # copy it to temp
+      TeXLive::TLUtils::copy($what, $tempdir);
+    }
+    debug("un-xzing $xzfile to $tarfile\n");
+    system("$xzdec < $xzfile_quote > $tarfile_quote");
+    if (! -f $tarfile) {
+      tlwarn("TLUtils::unpack: Unpacking $xzfile failed, please retry.\n");
+      unlink($tarfile, $xzfile);
+      return;
+    }
+    unlink($xzfile);
+  } else {
+    $tarfile = "$tempdir/$fn";
+    if ($what =~ m,http://|ftp://,) {
+      if (!download_file($what, $tarfile) || (! -r $tarfile)) {
+        tlwarn("Downloading \n");
+        tlwarn("   $what\n");
+        tlwarn("failed, please retry.\n");
+        unlink($tarfile);
+        return;
+      }
+    } else {
+      $tarfile = $what;
+      $remove_tarfile = 0;
+    }
+  }
+  if (untar($tarfile, $target, $remove_tarfile)) {
+    return "$pkg";
+  } else {
+    return;
+  }
+}
 
 =pod
 
 =item C<untar($tarfile, $targetdir, $remove_tarfile)>
 
-Unpacke C<$tarfile> in C<$targetdir> (changing directories to
+Unpacks C<$tarfile> in C<$targetdir> (changing directories to
 C<$targetdir> and then back to the original directory).  If
 C<$remove_tarfile> is true, unlink C<$tarfile> after unpacking.
 
@@ -2067,7 +2196,9 @@ sub untar {
   my $cwd = cwd();
   chdir($targetdir) || die "chdir($targetdir) failed: $!";
 
-  if (system($tar, "xf", $tarfile) != 0) {
+  # on w32 don't extract file modified time, because AV soft can open
+  # files in the mean time causing time stamp modification to fail
+  if (system($tar, win32() ? "xmf" : "xf", $tarfile) != 0) {
     tlwarn("untar: untarring $tarfile failed (in $targetdir)\n");
     $ret = 0;
   } else {
@@ -2087,8 +2218,7 @@ Returns 1 if different, 0 if the same.
 
 =cut
 
-sub tlcmp
-{
+sub tlcmp {
   my ($filea, $fileb) = @_;
   if (!defined($fileb)) {
     die <<END_USAGE;
@@ -2104,11 +2234,14 @@ END_USAGE
 }
 
 
-# Return contents of FNAME as a string, converting all of CR, LF, and
-# CRLF to just LF.
-#
-sub read_file_ignore_cr
-{
+=item C<read_file_ignore_cr($file)>
+
+Return contents of FILE as a string, converting all of CR, LF, and
+CRLF to just LF.
+
+=cut
+
+sub read_file_ignore_cr {
   my ($fname) = @_;
   my $ret = "";
 
@@ -2364,8 +2497,7 @@ sub download_file {
   return($ret);
 }
 
-sub _download_file
-{
+sub _download_file {
   my ($url, $dest, $wgetdefault) = @_;
   if (win32()) {
     $dest =~ s!/!\\!g;
@@ -2373,7 +2505,7 @@ sub _download_file
 
   my $wget = $ENV{"TL_DOWNLOAD_PROGRAM"} || $wgetdefault;
   my $wgetargs = $ENV{"TL_DOWNLOAD_ARGS"}
-                 || "--user-agent=texlive/wget --tries=10 --timeout=900 -q -O";
+                 || "--user-agent=texlive/wget --tries=10 --timeout=$NetworkTimeout -q -O";
 
   debug("downloading $url using $wget $wgetargs\n");
   my $ret;
@@ -2408,6 +2540,31 @@ sub nulldev {
   return (&win32)? 'nul' : '/dev/null';
 }
 
+=item C<get_full_line ($fh)>
+
+returns the next line from the file handle $fh, taking 
+continuation lines into account (last character of a line is \, and 
+no quoting is parsed).
+
+=cut
+
+#     open my $f, '<', $file_name or die;
+#     while (my $l = get_full_line($f)) { ... }
+#     close $f or die;
+sub get_full_line {
+  my ($fh) = @_;
+  my $line = <$fh>;
+  return undef unless defined $line;
+  return $line unless $line =~ s/\\\r?\n$//;
+  my $cont = get_full_line($fh);
+  if (!defined($cont)) {
+    tlwarn('Continuation disallowed at end of file');
+    $cont = "";
+  }
+  $cont =~ s/^\s*//;
+  return $line . $cont;
+}
+
 
 =back
 
@@ -2422,7 +2579,7 @@ Generate a skeleton of empty directories in the C<TEXMFSYSVAR> tree.
 =cut
 
 sub make_var_skeleton {
-  my $prefix=shift;
+  my ($prefix) = @_;
 
   mkdirhier "$prefix/tex/generic/config";
   mkdirhier "$prefix/fonts/map/dvipdfm/updmap";
@@ -2438,23 +2595,28 @@ sub make_var_skeleton {
 
 =item C<make_local_skeleton($prefix)>
 
-Generate a skeleton of empty directories in the C<TEXMFLOCAL> tree.
+Generate a skeleton of empty directories in the C<TEXMFLOCAL> tree,
+unless C<TEXMFLOCAL> already exists.
 
 =cut
 
 sub make_local_skeleton {
-  my $prefix=shift;
+  my ($prefix) = @_;
 
-  mkdirhier "$prefix/tex/latex/local";
-  mkdirhier "$prefix/tex/plain/local";
-  mkdirhier "$prefix/dvips/local";
+  return if (-d $prefix);
+
   mkdirhier "$prefix/bibtex/bib/local";
   mkdirhier "$prefix/bibtex/bst/local";
-  mkdirhier "$prefix/fonts/tfm/local";
-  mkdirhier "$prefix/fonts/vf/local";
+  mkdirhier "$prefix/doc/local";
+  mkdirhier "$prefix/dvips/local";
   mkdirhier "$prefix/fonts/source/local";
+  mkdirhier "$prefix/fonts/tfm/local";
   mkdirhier "$prefix/fonts/type1/local";
+  mkdirhier "$prefix/fonts/vf/local";
   mkdirhier "$prefix/metapost/local";
+  mkdirhier "$prefix/tex/latex/local";
+  mkdirhier "$prefix/tex/plain/local";
+  mkdirhier "$prefix/tlpkg";
   mkdirhier "$prefix/web2c";
 }
 
@@ -2515,67 +2677,10 @@ sub create_fmtutil {
 }
 
 sub create_updmap {
-  my ($tlpdb,$dest,$localconf) = @_;
-  my @tlpdblines = $tlpdb->updmap_cfg_lines(
-                             get_disabled_local_configs($localconf, '#'));
-  # we do not use _create_config_files here because we want to
-  # parse the $localconf file for the five options in updmap.cfg
-  #_create_config_files($tlpdb, "texmf/web2c/updmap-hdr.cfg", $dest,
-  #                     $localconf, 0, '#', \@tlpdblines);
-  my $headfile = "texmf/web2c/updmap-hdr.cfg";
-  my $root = $tlpdb->root;
-  my @lines;
-  my @localconflines;
-  my %configs;
-  if (-r "$localconf") {
-    #
-    # this should be done more intelligently, but for now only add those
-    # lines without any duplication check ...
-    open FOO, "<$localconf"
-      or die "strange, -r ok but cannot open $localconf: $!";
-    my @bla = <FOO>;
-    close(FOO);
-    for my $l (@bla) {
-      my ($k, $v, @rest) = split(' ', $l);
-      if (check_updmap_config_value($k, $v, $localconf)) {
-        $configs{$k} = $v;
-      } else {
-        push @localconflines, $l;
-      }
-    }
-  }
-  #
-  # read the -hdr file and replace the options if given in the local
-  # config file
-  open(INFILE,"<$root/$headfile") or die("Cannot open $root/$headfile");
-  for my $l (<INFILE>) {
-    my ($k, $v, @rest) = split(' ', $l);
-    if (check_updmap_config_value($k, $v, "$root/$headfile")) {
-      if (defined($configs{$k})) {
-        push @lines, "$k $configs{$k}\n";
-      } else {
-        push @lines, $l;
-      }
-    } else {
-      push @lines, $l;
-    }
-  }
-  close (INFILE);
-
-  # add the lines from the tlpdb
-  push @lines, @tlpdblines;
-
-  # add additional local config lines
-  push @lines, @localconflines;
-
-  if ($#lines >= 0) {
-    open(OUTFILE,">$dest")
-      or die("Cannot open $dest for writing: $!");
-
-    printf OUTFILE "# Generated by %s on %s\n", "$0", scalar localtime;
-    print OUTFILE @lines;
-    close(OUTFILE) || warn "close(>$dest) failed: $!";
-  }
+  my ($tlpdb,$dest) = @_;
+  my @tlpdblines = $tlpdb->updmap_cfg_lines();
+  _create_config_files($tlpdb, "texmf/web2c/updmap-hdr.cfg", $dest,
+                       undef, 0, '#', \@tlpdblines);
 }
 
 sub check_updmap_config_value {
@@ -2597,6 +2702,9 @@ sub check_updmap_config_value {
       tlwarn("Unknown setting for LW35  in $f: $v\n");
       return 0;
     }
+  } elsif ($k eq "kanjiEmbed") {
+    # any string is fine
+    return 1;
   } else {
     return 0;
   }
@@ -2640,7 +2748,7 @@ sub _create_config_files {
   my @lines = <INFILE>;
   push @lines, @$tlpdblinesref;
   close (INFILE);
-  if (-r "$localconf") {
+  if (defined($localconf) && -r $localconf) {
     #
     # this should be done more intelligently, but for now only add those
     # lines without any duplication check ...
@@ -3076,8 +3184,7 @@ If HASH is a reference, it is followed.
 
 =cut
 
-sub debug_hash
-{
+sub debug_hash {
   my ($label) = shift;
   my (%hash) = (ref $_[0] && $_[0] =~ /.*HASH.*/) ? %{$_[0]} : @_;
 
@@ -3167,6 +3274,25 @@ sub process_logging_options {
   }
 }
 
+=pod
+
+This function takes a single argument I<path> and returns it with
+C<"> chars surrounding it on Unix.  On Windows, the C<"> chars are only
+added if I<path> a few special characters, since unconditional quoting
+leads to errors there.  In all cases, any C<"> chars in I<path> itself
+are (erroneously) eradicated.
+ 
+=cut
+
+sub quotify_path_with_spaces {
+  my $p = shift;
+  my $m = win32() ? '[+=^&();,!%\s]' : '.';
+  if ( $p =~ m/$m/ ) {
+    $p =~ s/"//g; # remove any existing double quotes
+    $p = "\"$p\""; 
+  }
+  return($p);
+}
 
 =pod
 
@@ -3193,7 +3319,7 @@ sub conv_to_w32_path {
     chomp($cwd);
     $p = "$cwd\\$p";
   }
-  if ($p =~ m/ /) { $p = "\"$p\""; }
+  $p = quotify_path_with_spaces($p);
   return($p);
 }
 
@@ -3253,8 +3379,7 @@ and the program has to be C<wget> since we parse the output.
 
 =cut
 
-sub query_ctan_mirror
-{
+sub query_ctan_mirror {
   my $wget = $::progs{'wget'};
   if (!defined ($wget)) {
     tlwarn("query_ctan_mirror: Programs not set up, trying wget\n");
@@ -3264,7 +3389,7 @@ sub query_ctan_mirror
   # we need the verbose output, so no -q.
   # do not reduce retries here, but timeout still seems desirable.
   my $mirror = $TeXLiveServerURL;
-  my $cmd = "$wget $mirror --timeout=60 -O "
+  my $cmd = "$wget $mirror --timeout=$NetworkTimeout -O "
             . (win32() ? "nul" : "/dev/null") . " 2>&1";
 
   #
@@ -3309,8 +3434,7 @@ Check if MIRROR is functional.
 
 =cut
 
-sub check_on_working_mirror
-{
+sub check_on_working_mirror {
   my $mirror = shift;
 
   my $wget = $::progs{'wget'};
@@ -3318,6 +3442,7 @@ sub check_on_working_mirror
     tlwarn ("check_on_working_mirror: Programs not set up, trying wget\n");
     $wget = "wget";
   }
+  $wget = quotify_path_with_spaces($wget);
   #
   # the test is currently not completely correct, because we do not
   # use the LWP if it is set up for it, but I am currently too lazy
@@ -3325,7 +3450,7 @@ sub check_on_working_mirror
   # so try wget and only check for the return value
   # please KEEP the / after $mirror, some ftp mirrors do give back
   # an error if the / is missing after ../CTAN/
-  my $cmd = "$wget $mirror/ --timeout=60 -O "
+  my $cmd = "$wget $mirror/ --timeout=$NetworkTimeout -O "
             . (win32() ? "nul" : "/dev/null")
             . " 2>" . (win32() ? "nul" : "/dev/null");
   my $ret = system($cmd);
@@ -3346,8 +3471,7 @@ sub check_on_working_mirror
 
 =cut
 
-sub give_ctan_mirror_base
-{
+sub give_ctan_mirror_base {
   my @backbone = qw!http://www.ctan.org/tex-archive
                     http://www.tex.ac.uk/tex-archive
                     http://dante.ctan.org/tex-archive!;
@@ -3390,9 +3514,61 @@ sub give_ctan_mirror_base
 }
 
 
-sub give_ctan_mirror
-{
+sub give_ctan_mirror {
   return (give_ctan_mirror_base(@_) . "/$TeXLiveServerPath");
+}
+
+=item C<create_mirror_list()>
+
+=item C<extract_mirror_entry($listentry)>
+
+C<create_mirror_list> returns the lists of viable mirrors according to 
+ctan-mirrors.pl, in a list which also contains continents, and country headers.
+
+C<extract_mirror_entry> extracts the actual repository data from one
+of these entries.
+
+# KEEP THESE TWO FUNCTIONS IN SYNC!!!
+
+=cut
+
+sub create_mirror_list {
+  our $mirrors;
+  my @ret = ();
+  require("installer/ctan-mirrors.pl");
+  my @continents = sort keys %$mirrors;
+  for my $continent (@continents) {
+    # first push the name of the continent
+    push @ret, uc($continent);
+    my @countries = sort keys %{$mirrors->{$continent}};
+    for my $country (@countries) {
+      my @mirrors = sort keys %{$mirrors->{$continent}{$country}};
+      my $first = 1;
+      for my $mirror (@mirrors) {
+        my $mfull = $mirror;
+        $mfull =~ s!/$!!;
+        # do not append the server path part here, but add
+        # it down there in the extract mirror entry
+        #$mfull .= "/" . $TeXLive::TLConfig::TeXLiveServerPath;
+        #if ($first) {
+          my $country_str = sprintf "%-12s", $country;
+          push @ret, "  $country_str  $mfull";
+        #  $first = 0;
+        #} else {
+        #  push @ret, "    $mfull";
+        #}
+      }
+    }
+  }
+  return @ret;
+}
+
+# extract_mirror_entry is not very intelligent, it assumes that
+# the last "word" is the URL
+sub extract_mirror_entry {
+  my $ent = shift;
+  my @foo = split ' ', $ent;
+  return $foo[$#foo] . "/" . $TeXLive::TLConfig::TeXLiveServerPath;
 }
 
 sub tlmd5 {
@@ -3513,6 +3689,25 @@ sub compare_tlpdbs {
   $ret{'different_packages'} = \%diffpacks if (keys %diffpacks);
 
   return %ret;
+}
+
+sub tlnet_disabled_packages {
+  my ($root) = @_;
+  my $disabled_pkgs = "$root/tlpkg/dev/tlnet-disabled-packages.txt";
+  my @ret;
+  if (-r $disabled_pkgs) {
+    open (DISABLED, "<$disabled_pkgs") || die "Huu, -r but cannot open: $?";
+    while (<DISABLED>) {
+      chomp;
+      next if /^\s*#/;
+      next if /^\s*$/;
+      $_ =~ s/^\s*//;
+      $_ =~ s/\s*$//;
+      push @ret, $_;
+    }
+    close(DISABLED) || warn ("Cannot close tlnet-disabled-packages.txt: $?");
+  }
+  return @ret;
 }
 
 sub report_tlpdb_differences {
@@ -3653,9 +3848,9 @@ sub mktexupd {
         $files{$file}=1;
       }
     },
-    # "reset" => sub { 
-    #    %files=();
-    # },
+    "reset" => sub { 
+       %files=();
+    },
     "mustexist" => sub {
       $mustexist=shift;
     },
@@ -3676,12 +3871,14 @@ sub mktexupd {
       foreach my $path (keys %files) {
         foreach my $db (@texmfdbs) {
           $db=substr($db, -1) if ($db=~m|/$|); # strip leading /
-          if (substr($path, 0, length("$db/")) eq "$db/") {
+          $db = lc($db) if win32();
+          $up = (win32() ? lc($path) : $path);
+          if (substr($up, 0, length("$db/")) eq "$db/") {
             # we appended a / because otherwise "texmf" is recognized as a
             # substring of "texmf-dist".
-            my $path='./' . substr($path, length("$db/"));
+            my $np = './' . substr($up, length("$db/"));
             my ($dir, $file);
-            $_=$path;
+            $_=$np;
             ($dir, $file) = m|(.*)/(.*)|;
             $dbs{$db}{$dir}{$file}=1;
           }

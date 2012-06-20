@@ -1,12 +1,12 @@
-# $Id: TLConfig.pm 22695 2011-05-30 23:06:34Z karl $
+# $Id: TLConfig.pm 26329 2012-05-13 17:31:15Z karl $
 # TeXLive::TLConfig.pm - module exporting configuration values
-# Copyright 2007, 2008, 2009, 2010, 2011 Norbert Preining
+# Copyright 2007, 2008, 2009, 2010, 2011, 2012 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLConfig;
 
-my $svnrev = '$Revision: 22695 $';
+my $svnrev = '$Revision: 26329 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -47,13 +47,14 @@ BEGIN {
     %TLPDBOptions
     %TLPDBSettings
     %TLPDBConfigs
+    $NetworkTimeout
   );
   @EXPORT = @EXPORT_OK;
 }
 
 # the year of our release, will be used in the location of the
 # network packages, and in menu names, and other places.
-$ReleaseYear = 2011;
+$ReleaseYear = 2012;
 
 # users can upgrade from this year to the current year; maybe a spread
 # of more than one year will be useful at some point, but not now.
@@ -145,10 +146,10 @@ our %TLPDBOptions = (
       "Create formats on installation" ],
   "desktop_integration" =>
     [ "b", 1, "desktop_integration",
-      "Create shortcuts (menu and desktop) in postinst" ],
+      "Create Start menu shortcuts (w32)" ],
   "file_assocs" =>
     [ "n:0..2", 1, "fileassocs",
-      "Change file associations in postinst" ],
+      "Change file associations (w32)" ],
   "install_docfiles" =>
     [ "b", 1, "docfiles",
       "Install documentation files" ],
@@ -172,7 +173,10 @@ our %TLPDBOptions = (
       "Destination for symlinks for man pages" ],
   "w32_multi_user" =>
     [ "b", 0, "multiuser",
-      "Install for shortcuts/menu items for all users (w32)" ],
+      "Install for all users (w32)" ],
+  "generate_updmap" =>
+    [ "b", 0, "generate_updmap",
+      "Run tlmgr generate updmap after maps have changed" ],
 );
 
 
@@ -183,6 +187,9 @@ our %TLPDBSettings = (
 
 our $WindowsMainMenuName = "TeX Live $ReleaseYear";
 
+#
+# timeout for network connections (wget, LWP) in seconds
+our $NetworkTimeout = 30;
 
 1;
 

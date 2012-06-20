@@ -1,4 +1,4 @@
-# $Id: TLPOBJ.pm 22535 2011-05-19 09:58:08Z mpg $
+# $Id: TLPOBJ.pm 24382 2011-10-24 03:18:31Z preining $
 # TeXLive::TLPOBJ.pm - module for using tlpobj files
 # Copyright 2007, 2008, 2009, 2010, 2011 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
@@ -15,7 +15,7 @@ use TeXLive::TLTREE;
 our $_tmp;
 my $_containerdir;
 
-my $svnrev = '$Revision: 22535 $';
+my $svnrev = '$Revision: 24382 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -716,7 +716,7 @@ sub update_from_catalogue
       $foo =~ s/^.Date: //;
       # trying to extract the interesting part of a subversion date
       # keyword expansion here, e.g.,
-      # $Date: 2011-05-19 11:58:08 +0200 (Thu, 19 May 2011) $
+      # $Date: 2011-10-24 05:18:31 +0200 (Mon, 24 Oct 2011) $
       # ->2007-08-15 19:43:35 +0100
       $foo =~ s/ \(.*\)( *\$ *)$//;  # maybe nothing after parens
       $self->cataloguedata->{'date'} = $foo;
@@ -949,16 +949,22 @@ sub updmap_cfg_lines {
       $maps{$1} = 1;
     } elsif ($e =~ m/addMixedMap (.*)$/) {
       $maps{$1} = 2;
+    } elsif ($e =~ m/addKanjiMap (.*)$/) {
+      $maps{$1} = 3;
     }
     # others are ignored here
   }
   my @updmaplines;
   foreach (sort keys %maps) {
     next if TeXLive::TLUtils::member($_, @disabled);
-    if ($maps{$_} == 2) {
-      push @updmaplines, "MixedMap $_\n";
-    } else {
+    if ($maps{$_} == 1) {
       push @updmaplines, "Map $_\n";
+    } elsif ($maps{$_} == 2) {
+      push @updmaplines, "MixedMap $_\n";
+    } elsif ($maps{$_} == 3) {
+      push @updmaplines, "KanjiMap $_\n";
+    } else {
+      tlerror("Should not happen!\n");
     }
   }
   return(@updmaplines);
