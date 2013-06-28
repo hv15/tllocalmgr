@@ -18,7 +18,7 @@ my $TEXMFVAR = "/var/lib/texmf";
 my $INSTALLEDPKGS = "$TEXMFVAR/arch/installedpkgs";
 
 our $VERSION = "0.4.3";
-our $YEAR = "2011";
+our $YEAR = "2013";
 # my $CTANBASEURL="http://mirror.ctan.org/systems/texlive/tlnet";
 # for TexLive 2011 pretest
 my $CTANBASEURL = "http://www.math.utah.edu/pub/texlive/tlpretest";

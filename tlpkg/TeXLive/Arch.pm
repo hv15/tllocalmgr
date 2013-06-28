@@ -17,59 +17,24 @@ my @core_colls = qw/
   fontsrecommended
   genericrecommended
   langczechslovak
-  langdutch
+  langenglish
+  langeuropean
   langfrench
   langgerman
   langitalian
   langpolish
   langportuguese
   langspanish
-  langenglish
   latex
   latexrecommended
   luatex
   mathextra
   metapost
-  texinfo
   xetex
   /;
 
-## other collections in CORE or BIN:
-# langdanish langfinnish langlatin langhungarian langlatvian langlithuanian
-# langnorwegian langother langswedish
-
-# only the following two contain packages that are not already contained in
-# texlive-bin:
-push @core_colls, qw/ langhungarian langlithuanian /;
-
-# also langswedish and langfinnish contain swebib and finbib, resp.,
-# which we add later to bibtexextra
-
 # collections that are specific to texlive-core-doc:
 my @core_doc_colls = qw(
-    documentation-base
-    documentation-arabic
-    documentation-bulgarian
-    documentation-chinese
-    documentation-czechslovak
-    documentation-dutch
-    documentation-english
-    documentation-finnish
-    documentation-french
-    documentation-german
-    documentation-italian
-    documentation-japanese
-    documentation-korean
-    documentation-mongolian
-    documentation-polish
-    documentation-portuguese
-    documentation-russian
-    documentation-slovenian
-    documentation-spanish
-    documentation-thai
-    documentation-turkish
-    documentation-ukrainian
-    documentation-vietnamese
 );
 
 # These are the other collections that define Arch Linux packages:
@@ -98,14 +63,8 @@ my @other_colls = qw(
 my @langextra_colls = qw(
     langafrican
     langarabic
-    langarmenian
-    langcroatian
-    langhebrew
     langindic
-    langmongolian
-    langtibetan
-    langturkmen
-    langvietnamese
+    langother
 );
 
 # we add swebib and finbib to bibtexextra:
