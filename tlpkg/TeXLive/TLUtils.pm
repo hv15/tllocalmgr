@@ -1,12 +1,12 @@
-# $Id: TLUtils.pm 26663 2012-05-26 18:07:36Z karl $
+# $Id: TLUtils.pm 30367 2013-05-10 12:56:49Z siepo $
 # TeXLive::TLUtils.pm - the inevitable utilities for TeX Live.
-# Copyright 2007-2012 Norbert Preining, Reinhard Kotucha
+# Copyright 2007-2013 Norbert Preining, Reinhard Kotucha
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLUtils;
 
-my $svnrev = '$Revision: 26663 $';
+my $svnrev = '$Revision: 30367 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -50,6 +50,7 @@ C<TeXLive::TLUtils> -- utilities used in the TeX Live infrastructure
   TeXLive::TLUtils::dirname($path);
   TeXLive::TLUtils::basename($path);
   TeXLive::TLUtils::dirname_and_basename($path);
+  TeXLive::TLUtils::tl_abs_path($path);
   TeXLive::TLUtils::dir_writable($path);
   TeXLive::TLUtils::dir_creatable($path);
   TeXLive::TLUtils::mkdirhier($path);
@@ -114,9 +115,11 @@ use vars qw(
   $::LOGFILENAME @::LOGLINES 
   @::debug_hook @::ddebug_hook @::dddebug_hook @::info_hook @::warn_hook
   @::install_packages_hook
+  $::latex_updated
   $::machinereadable
   $::no_execute_actions
   $::regenerate_all_formats
+  $::tex_updated
   $TeXLive::TLDownload::net_lib_avail
 );
 
@@ -135,6 +138,7 @@ BEGIN {
     &dirname
     &basename
     &dirname_and_basename
+    &tl_abs_path
     &dir_writable
     &dir_creatable
     &mkdirhier
@@ -263,15 +267,20 @@ C</.*-(.*$)/> as a last resort and hope it provides something useful.
 sub platform_name {
   my ($guessed_platform) = @_;
 
-  $guessed_platform =~ s/^x86_64-(.*-k?)freebsd/amd64-$1freebsd/;
+  $guessed_platform =~ s/^x86_64-(.*-k?)(free|net)bsd/amd64-$1$2bsd/;
   my $CPU; # CPU type as reported by config.guess.
   my $OS;  # O/S type as reported by config.guess.
   ($CPU = $guessed_platform) =~ s/(.*?)-.*/$1/;
   $CPU =~ s/^alpha(.*)/alpha/;   # alphaev whatever
-  $CPU =~ s/armv7l/armel/;       # arm whatever
+  $CPU =~ s/mips64el/mipsel/;    # don't distinguish mips64 and 32 el
   $CPU =~ s/powerpc64/powerpc/;  # don't distinguish ppc64
   $CPU =~ s/sparc64/sparc/;      # don't distinguish sparc64
-  $CPU =~ s/mips64el/mipsel/;    # don't distinguish mips64 and 32 el
+
+  # armv6l-unknown-linux-gnueabihf -> armhf-linux (RPi)
+  # armv7l-unknown-linux-gnueabi   -> armel-linux (Android)
+  if ($CPU =~ /^arm/) {
+    $CPU = $guessed_platform =~ /hf$/ ? "armhf" : "armel";
+  }
 
   my @OSs = qw(aix cygwin darwin freebsd hpux irix
                kfreebsd linux netbsd openbsd solaris);
@@ -284,10 +293,18 @@ sub platform_name {
   }
   
   if ($OS eq "darwin") {
-    # We never want to guess x86_64-darwin even if config.guess
-    # does, because Leopard can be 64-bit but our x86_64-darwin
-    # binaries will only run on Snow Leopard.
-    $CPU = "universal";
+    # We want to guess x86_64-darwin on new-enough systems.  
+    # Most robust approach is to check sw_vers (os version)
+    # and sysctl (processor hardware).
+    chomp (my $sw_vers = `sw_vers -productVersion`);
+    my ($os_major,$os_minor) = split (/\./, $sw_vers);
+    #
+    chomp (my $sysctl = `sysctl hw.cpu64bit_capable`);
+    my (undef,$hw_64_bit) = split (" ", $sysctl);
+    #
+    $CPU = ($os_major >= 10 && $os_minor >= 6 && $hw_64_bit >= 1)
+           ? "x86_64" : "universal";
+    
   } elsif ($CPU =~ /^i.86$/) {
     $CPU = "i386";  # 586, 686, whatever
   }
@@ -311,10 +328,11 @@ sub platform_desc {
 
   my %platform_name = (
     'alpha-linux'      => 'DEC Alpha with GNU/Linux',
-    'alphaev5-osf'     => 'DEC Alphaev5 OSF',
     'amd64-freebsd'    => 'x86_64 with FreeBSD',
     'amd64-kfreebsd'   => 'x86_64 with GNU/kFreeBSD',
+    'amd64-netbsd'     => 'x86_64 with NetBSD',
     'armel-linux'      => 'ARM with GNU/Linux',
+    'armhf-linux'      => 'ARMhf with GNU/Linux',
     'hppa-hpux'        => 'HP-UX',
     'i386-cygwin'      => 'Intel x86 with Cygwin',
     'i386-darwin'      => 'Intel x86 with MacOSX/Darwin',
@@ -412,7 +430,7 @@ C<which> does the same as the UNIX command C<which(1)>, but it is
 supposed to work on Windows too.  On Windows we have to try all the
 extensions given in the C<PATHEXT> environment variable.  We also try
 without appending an extension because if C<$string> comes from an
-environment variable, an extension might aleady be present.
+environment variable, an extension might already be present.
 
 =cut
 
@@ -527,46 +545,6 @@ sub run_cmd {
 
 =over 4
 
-=item C<dirname($path)>
-
-Return C<$path> with its trailing C</component> removed.
-
-=cut
-
-sub dirname {
-  my $path=shift;
-  if (win32) {
-    $path=~s!\\!/!g;
-  }
-  if ($path=~m!/!) {   # dirname("foo/bar/baz") -> "foo/bar"
-    $path=~m!(.*)/.*!; # works because of greedy matching
-    return $1;
-  } else {             # dirname("ignore") -> "."
-    return ".";
-  }
-}
-
-
-=item C<basename($path)>
-
-Return C<$path> with any leading directory components removed.
-
-=cut
-
-sub basename {
-  my $path=shift;
-  if (win32) {
-    $path=~s!\\!/!g;
-  }
-  if ($path=~m!/!) {  # basename("foo/bar") -> "bar"
-    $path=~m!.*/(.*)!;
-    return $1;
-  } else {            # basename("ignore") -> "ignore"
-    return $path;
-  }
-}
-
-
 =item C<dirname_and_basename($path)>
 
 Return both C<dirname> and C<basename>.  Example:
@@ -577,11 +555,104 @@ Return both C<dirname> and C<basename>.  Example:
 
 sub dirname_and_basename {
   my $path=shift;
+  my ($share, $base) = ("", "");
   if (win32) {
     $path=~s!\\!/!g;
   }
-  $path=~/(.*)\/(.*)/;
-  return ("$1", "$2");
+  # do not try to make sense of paths ending with /..
+  return (undef, undef) if $path =~ m!/\.\.$!;
+  if ($path=~m!/!) {   # dirname("foo/bar/baz") -> "foo/bar"
+    # eliminate `/.' path components
+    while ($path =~ s!/\./!/!) {};
+    # UNC path? => first split in $share = //xxx/yy and $path = /zzzz
+    if (win32() and $path =~ m!^(//[^/]+/[^/]+)(.*)$!) {
+      ($share, $path) = ($1, $2);
+      if ($path =~ m!^/?$!) {
+        $path = $share;
+        $base = "";
+      } elsif ($path =~ m!(/.*)/(.*)!) {
+        $path = $share.$1;
+        $base = $2;
+      } else {
+        $base = $path;
+        $path = $share;
+      }
+      return ($path, $base);
+    }
+    # not a UNC path
+    $path=~m!(.*)/(.*)!; # works because of greedy matching
+    return ((($1 eq '') ? '/' : $1), $2);
+  } else {             # dirname("ignore") -> "."
+    return (".", $path);
+  }
+}
+
+
+=item C<dirname($path)>
+
+Return C<$path> with its trailing C</component> removed.
+
+=cut
+
+sub dirname {
+  my $path = shift;
+  my ($dirname, $basename) = dirname_and_basename($path);
+  return $dirname;
+}
+
+
+=item C<basename($path)>
+
+Return C<$path> with any leading directory components removed.
+
+=cut
+
+sub basename {
+  my $path = shift;
+  my ($dirname, $basename) = dirname_and_basename($path);
+  return $basename;
+}
+
+
+=item C<tl_abs_path($path)>
+
+# Other than Cwd::abs_path, tl_abs_path also works
+# if only the grandparent exists.
+
+=cut
+
+sub tl_abs_path {
+  my $path = shift;
+  if (win32) {
+    $path=~s!\\!/!g;
+  }
+  my $ret;
+  eval {$ret = Cwd::abs_path($path);}; # eval needed for w32
+  return $ret if defined $ret;
+  # $ret undefined: probably the parent does not exist.
+  # But we also want an answer if only the grandparent exists.
+  my ($parent, $base) = dirname_and_basename($path);
+  return undef unless defined $parent;
+  eval {$ret = Cwd::abs_path($parent);};
+  if (defined $ret) {
+    if ($ret =~ m!/$! or $base =~ m!^/!) {
+      $ret = "$ret$base";
+    } else {
+      $ret = "$ret/$base";
+    }
+    return $ret;
+  } else {
+    my ($pparent, $pbase) = dirname_and_basename($parent);
+    return undef unless defined $pparent;
+    eval {$ret = Cwd::abs_path($pparent);};
+    return undef unless defined $ret;
+    if ($ret =~ m!/$!) {
+      $ret = "$ret$pbase/$base";
+    } else {
+      $ret = "$ret/$pbase/$base";
+    }
+    return $ret;
+  }
 }
 
 
@@ -599,14 +670,16 @@ sub dir_slash {
 
 # test whether subdirectories can be created in the argument
 sub dir_creatable {
-  $path=shift;
+  my $path=shift;
   #print STDERR "testing $path\n";
   $path =~ s!\\!/!g if win32;
+  return 0 unless -d $path;
   $path =~ s!/$!!;
-  return 0 unless -d dir_slash($path);
   #print STDERR "testing $path\n";
   my $i = 0;
-  while (-e $path . "/" . $i) { $i++; }
+  my $too_large = 100000;
+  while ((-e $path . "/" . $i) and $i<$too_large) { $i++; }
+  return 0 if $i>=$too_large;
   my $d = $path."/".$i;
   #print STDERR "creating $d\n";
   return 0 unless mkdir $d;
@@ -637,12 +710,14 @@ a fileserver.
 # real Program Files. Ugh.
 
 sub dir_writable {
-  $path=shift;
-  return 0 unless -d dir_slash($path);
+  my $path=shift;
+  return 0 unless -d $path;
   $path =~ s!\\!/!g if win32;
   $path =~ s!/$!!;
   my $i = 0;
-  while (-e $path . "/" . $i) { $i++; }
+  my $too_large = 100000;
+  while ((-e $path . "/" . $i) and $i<$too_large) { $i++; }
+  return 0 if $i>=$too_large;
   my $f = $path."/".$i;
   return 0 unless open TEST, ">".$f;
   my $written = 0;
@@ -956,8 +1031,11 @@ sub touch {
     if (-e $file) {
 	    utime time, time, $file;
     } else {
-	    open TMP, ">>$file" && close TMP
-          or warn "Can't update timestamps of $file: $!\n";
+      if (open( TMP, ">$file")) {
+        close(TMP);
+      } else {
+        warn "Can't create file $file: $!\n";
+      }
     }
   }
 }
@@ -1313,7 +1391,7 @@ sub install_packages {
     # if a package is relocatable we have to cancel the reloc prefix
     # before we save it to the local tlpdb
     if ($tlpobj->relocated) {
-      $tlpobj->cancel_reloc_prefix;
+      $tlpobj->replace_reloc_prefix;
     }
     $totlpdb->add_tlpobj($tlpobj);
     # we have to write out the tlpobj file since it is contained in the
@@ -1889,6 +1967,7 @@ sub announce_execute_actions {
 =pod
 
 =item C<add_symlinks($root, $arch, $sys_bin, $sys_man, $sys_info)>
+
 =item C<remove_symlinks($root, $arch, $sys_bin, $sys_man, $sys_info)>
 
 These two functions try to create/remove symlinks for binaries, man pages,
@@ -1962,24 +2041,26 @@ sub add_remove_symlinks {
   return if win32();
   if ($mode eq "add") {
     $errors++ unless add_link_dir_dir($plat_bindir, $sys_bin);
-    if (-d "$Master/texmf/doc/info") {
-      $errors++ unless add_link_dir_dir("$Master/texmf/doc/info", $sys_info);
+    if (-d "$Master/texmf-dist/doc/info") {
+      $errors++
+        unless add_link_dir_dir("$Master/texmf-dist/doc/info", $sys_info);
     }
   } elsif ($mode eq "remove") {
     $errors++ unless remove_link_dir_dir($plat_bindir, $sys_bin);
-    if (-d "$Master/texmf/doc/info") {
-      $errors++ unless remove_link_dir_dir("$Master/texmf/doc/info", $sys_info);
+    if (-d "$Master/texmf-dist/doc/info") {
+      $errors++
+        unless remove_link_dir_dir("$Master/texmf-dist/doc/info", $sys_info);
     }
   } else {
     die ("should not happen, unknown mode $mode in add_remove_symlinks!");
   }
   mkdirhier $sys_man if ($mode eq "add");
-  if (-w  $sys_man && -d "$Master/texmf/doc/man") {
+  if (-w  $sys_man && -d "$Master/texmf-dist/doc/man") {
     debug("$mode symlinks for man pages in $sys_man\n");
-    my $foo = `(cd "$Master/texmf/doc/man" && echo *)`;
+    my $foo = `(cd "$Master/texmf-dist/doc/man" && echo *)`;
     chomp (my @mans = split (' ', $foo));
     foreach my $m (@mans) {
-      my $mandir = "$Master/texmf/doc/man/$m";
+      my $mandir = "$Master/texmf-dist/doc/man/$m";
       next unless -d $mandir;
       if ($mode eq "add") {
         $errors++ unless add_link_dir_dir($mandir, "$sys_man/$m");
@@ -2476,14 +2557,19 @@ sub download_file {
   } else {
     $url = "$TeXLiveURL/$relpath";
   }
+
+  my $wget_retry = 0;
   if (defined($::tldownload_server) && $::tldownload_server->enabled) {
-    debug("persistent connection set up, trying to get file.\n");
-    if (($ret = $::tldownload_server->get_file($url, $dest))) {
-      debug("downloading file via permanent connection succeeded\n");
+    debug("persistent connection set up, trying to get $url (for $dest)\n");
+    $ret = $::tldownload_server->get_file($url, $dest);
+    if ($ret) {
+      debug("downloading file via persistent connection succeeded\n");
       return $ret;
     } else {
-      tlwarn("permanent server connection set up, but downloading did not succeed!");
-      tlwarn("Retrying with wget.\n");
+      tlwarn("TLUtils::download_file: persistent connection ok,"
+             . " but download failed: $url\n");
+      tlwarn("TLUtils::download_file: retrying with wget.\n");
+      $wget_retry = 1; # just so we can give another msg.
     }
   } else {
     if (!defined($::tldownload_server)) {
@@ -2493,7 +2579,15 @@ sub download_file {
     }
     debug("persistent connection not set up, using wget\n");
   }
+  
+  # try again.
   my $ret = _download_file($url, $dest, $wget);
+  
+  if ($wget_retry) {
+    tlwarn("TLUtils::download_file: retry with wget "
+           . ($ret ? "succeeded" : "failed") . ": $url\n");
+  }
+  
   return($ret);
 }
 
@@ -2672,15 +2766,70 @@ sub create_fmtutil {
   my ($tlpdb,$dest,$localconf) = @_;
   my @lines = $tlpdb->fmtutil_cnf_lines(
                          get_disabled_local_configs($localconf, '#'));
-  _create_config_files($tlpdb, "texmf/web2c/fmtutil-hdr.cnf", $dest,
+  _create_config_files($tlpdb, "texmf-dist/web2c/fmtutil-hdr.cnf", $dest,
                        $localconf, 0, '#', \@lines);
 }
 
 sub create_updmap {
   my ($tlpdb,$dest) = @_;
+  check_for_old_updmap_cfg();
   my @tlpdblines = $tlpdb->updmap_cfg_lines();
-  _create_config_files($tlpdb, "texmf/web2c/updmap-hdr.cfg", $dest,
+  _create_config_files($tlpdb, "texmf-dist/web2c/updmap-hdr.cfg", $dest,
                        undef, 0, '#', \@tlpdblines);
+}
+
+sub check_for_old_updmap_cfg {
+  chomp( my $tmfsysconf = `kpsewhich -var-value=TEXMFSYSCONFIG` ) ;
+  my $oldupd = "$tmfsysconf/web2c/updmap.cfg";
+  return unless -r $oldupd;  # if no such file, good.
+
+  open (OLDUPD, "<$oldupd") || die "open($oldupd) failed: $!";
+  my $firstline = <OLDUPD>;
+  close(OLDUPD);
+  # cygwin returns undef when reading from an empty file, we have
+  # to make sure that this is anyway initialized
+  $firstline = "" if (!defined($firstline));
+  chomp ($firstline);
+  #
+  if ($firstline =~ m/^# Generated by (install-tl|.*\/tlmgr) on/) {
+    # assume it was our doing, rename it.
+    my $nn = "$oldupd.DISABLED";
+    if (-r $nn) {
+      my $fh;
+      ($fh, $nn) = File::Temp::tempfile( 
+        "updmap.cfg.DISABLED.XXXXXX", DIR => "$tmfsysconf/web2c");
+    }
+    print "Renaming old config file from 
+  $oldupd
+to
+  $nn
+";
+    if (rename($oldupd, $nn)) {
+      if (system("mktexlsr", $tmfsysconf) != 0) {
+        die "mktexlsr $tmfsysconf failed after updmap.cfg rename, fix fix: $!";
+      }
+      print "No further action should be necessary.\n";
+    } else {
+      print STDERR "
+Renaming of
+  $oldupd
+did not succeed.  This config file should not be used anymore,
+so please do what's necessary to eliminate it.
+See the documentation for updmap.
+";
+    }
+
+  } else {  # first line did not match
+    # that is NOT a good idea, because updmap creates updmap.cfg in
+    # TEXMFSYSCONFIG when called with --enable Map etc, so we should
+    # NOT warn here
+    # print STDERR "Apparently
+#  $oldupd
+# was created by hand.  This config file should not be used anymore,
+# so please do what's necessary to eliminate it.
+# See the documentation for updmap.
+# ";
+  }
 }
 
 sub check_updmap_config_value {
@@ -2715,8 +2864,8 @@ sub create_language_dat {
   # no checking for disabled stuff for language.dat and .def
   my @lines = $tlpdb->language_dat_lines(
                          get_disabled_local_configs($localconf, '%'));
-  _create_config_files($tlpdb, "texmf/tex/generic/config/language.us", $dest,
-                       $localconf, 0, '%', \@lines);
+  _create_config_files($tlpdb, "texmf-dist/tex/generic/config/language.us",
+                       $dest, $localconf, 0, '%', \@lines);
 }
 
 sub create_language_def {
@@ -2728,7 +2877,8 @@ sub create_language_def {
   push @postlines, "%%% No changes may be made beyond this point.\n";
   push @postlines, "\n";
   push @postlines, "\\uselanguage {USenglish}             %%% This MUST be the last line of the file.\n";
-  _create_config_files ($tlpdb, "texmf/tex/generic/config/language.us.def", $dest, $localconf, 1, '%', \@lines, @postlines);
+  _create_config_files ($tlpdb,"texmf-dist/tex/generic/config/language.us.def",
+                        $dest, $localconf, 1, '%', \@lines, @postlines);
 }
 
 sub create_language_lua {
@@ -2737,8 +2887,8 @@ sub create_language_lua {
   my @lines = $tlpdb->language_lua_lines(
                          get_disabled_local_configs($localconf, '--'));
   my @postlines = ("}\n");
-  _create_config_files ($tlpdb, "texmf/tex/generic/config/language.us.lua",
-    $dest, $localconf, 0, '--', \@lines, @postlines);
+  _create_config_files ($tlpdb,"texmf-dist/tex/generic/config/language.us.lua",
+                        $dest, $localconf, 0, '--', \@lines, @postlines);
 }
 
 sub _create_config_files {
@@ -2986,22 +3136,24 @@ Test whether installation with TEXDIR set to $texdir would succeed due to
 writing permissions.
 
 Writable or not, we will not allow installation to the root
-directory (Unix) or the root of the system drive (Windows).
+directory (Unix) or the root of a drive (Windows).
 
 =cut
 
 sub texdir_check {
   my $texdir = shift;
+  return 0 unless defined $texdir;
+  # convert to absolute/canonical, for safer parsing
+  # tl_abs_path should work as long as grandparent exists
+  $texdir = tl_abs_path($texdir);
+  return 0 unless defined $texdir;
+  # also reject the root of a drive/volume,
+  # assuming that only the canonical form of the root ends with /
+  return 0 if $texdir =~ m!/$!;
   my $texdirparent;
   my $texdirpparent;
-  $texdir =~ s!/$!!; # remove final slash
-  #print STDERR "Checking $texdir".'[/]'."\n";
-  # disallow unix root
-  return 0 if $texdir eq "";
-  # disallow w32 systemdrive root
-  return 0 if (win32() and $texdir eq $ENV{SystemDrive});
 
-  return dir_writable($texdir) if (-d dir_slash($texdir));
+  return dir_writable($texdir) if (-d $texdir);
   ($texdirparent = $texdir) =~ s!/[^/]*$!!;
   #print STDERR "Checking $texdirparent".'[/]'."\n";
   return  dir_creatable($texdirparent) if -d dir_slash($texdirparent);
@@ -3311,16 +3463,16 @@ would be considered part of the filename.
 
 sub conv_to_w32_path {
   my $p = shift;
-  $p =~ s!/!\\!g;
   # we need absolute paths, too
-  if ($p !~ m!^.:!) {
-    my $cwd = `cd`;
-    die "sorry, could not find current working directory via cd?!" if ! $cwd;
-    chomp($cwd);
-    $p = "$cwd\\$p";
+  my $pabs = tl_abs_path($p);
+  if (not defined $pabs) {
+    $pabs = $p;
+    tlwarn ("sorry, could not determine absolute path of $p!\n".
+      "using original path instead");
   }
-  $p = quotify_path_with_spaces($p);
-  return($p);
+  $pabs =~ s!/!\\!g;
+  $pabs = quotify_path_with_spaces($pabs);
+  return($pabs);
 }
 
 =pod
@@ -3604,10 +3756,10 @@ sub compare_tlpobjs {
     $ret{'revision'} = "$rA:$rB";
   }
   if ($tlpA->relocated) {
-    $tlpA->cancel_reloc_prefix;
+    $tlpA->replace_reloc_prefix;
   }
   if ($tlpB->relocated) {
-    $tlpB->cancel_reloc_prefix;
+    $tlpB->replace_reloc_prefix;
   }
   my @fA = $tlpA->all_files;
   my @fB = $tlpB->all_files;
