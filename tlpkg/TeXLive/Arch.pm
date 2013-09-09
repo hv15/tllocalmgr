@@ -6,7 +6,7 @@ use warnings;
 use List::MoreUtils qw/any none/;
 use Carp;
 
-my $SKIPPATTERN = qr{^(?:collection|hyphen)-};
+my $SKIPPATTERN = qr{^(?:collection)-};
 
 
 # TeXLive collections in the texlive-core package:
@@ -67,13 +67,7 @@ my @langextra_colls = qw(
     langother
 );
 
-# we add swebib and finbib to bibtexextra:
-my @bibtexadd = qw( swebib finbib );
-
-# but only swebib has documentation:
-my @bibtexdocadd = qw( swebib );
-
-my @core_additional = qw( bidi iftex pgf ruhyphen ukrhyph );
+my @core_additional = qw( bidi iftex pgf ruhyphen ukrhyph hyphen-greek hyphen-ancientgreek );
 my @coredoc_additional = qw( bidi iftex pgf luatex pdftex );
 
 sub collection_with_runfiles_pattern {
@@ -119,8 +113,6 @@ sub archpackages {
     push @{ $tlpackages{'core-doc'} }, @coredoc_additional;
     push @{ $tlpackages{'core-doc'} },
         $self->collection_with_docfiles_pattern('binextra', 'texmf-dist|RELOC');
-    push @{ $tlpackages{'bibtexextra'} },     @bibtexadd;
-    push @{ $tlpackages{'bibtexextra-doc'} }, @bibtexdocadd;
 
     # We now produce the list of upstream packages that we put in
     # texlive-core:
@@ -185,6 +177,10 @@ sub archpackages {
             next if (
                 $coll =~ /^langcyrillic/
                 and ( $d eq 'ruhyphen' or $d eq 'ukrhyph' )
+            );
+            next if (
+                $coll =~ /^langgreek/
+                and ( $d eq 'hyphen-greek' or $d eq 'hyphen-ancientgreek' )
             );
             push @{ $tlpackages{$coll} }, $d
             unless $d =~ /$SKIPPATTERN/;
