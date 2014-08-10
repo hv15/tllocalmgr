@@ -16,6 +16,7 @@ my @core_colls = qw/
   context
   fontsrecommended
   genericrecommended
+  langcjk
   langczechslovak
   langenglish
   langeuropean
@@ -46,9 +47,11 @@ my @other_colls = qw(
     genericextra
     htmlxml
     humanities
-    langcjk
+    langchinese
     langcyrillic
     langgreek
+    langjapanese
+    langkorean
     latexextra
     music
     pictures
