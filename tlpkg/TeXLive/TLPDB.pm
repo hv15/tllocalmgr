@@ -1,12 +1,12 @@
-# $Id: TLPDB.pm 30347 2013-05-09 18:45:54Z karl $
+# $Id: TLPDB.pm 34045 2014-05-15 17:39:06Z karl $
 # TeXLive::TLPDB.pm - module for using tlpdb files
-# Copyright 2007-2013 Norbert Preining
+# Copyright 2007-2014 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLPDB;
 
-my $svnrev = '$Revision: 30347 $';
+my $svnrev = '$Revision: 34045 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -760,7 +760,7 @@ sub expand_dependencies {
           # before we ignored all deps of schemes and colls if -no-collections
           # was given, but this prohibited auto-install of new collections
           # even if the scheme is updated.
-          # Now we supress only "same-level dependencies", so scheme -> scheme
+          # Now we suppress only "same-level dependencies", so scheme -> scheme
           # and collections -> collections and package -> package
           # hoping that this works out better
           # if ($tlpdd->category =~ m/$MetaCategoriesRegexp/) {
@@ -1410,7 +1410,7 @@ sub install_package_files {
       next;
     }
     if ($reloc) {
-      if ($totlpdb->setting("usertree")) {
+      if ($self->setting("usertree")) {
         $tlpobj->cancel_reloc_prefix;
       } else {
         $tlpobj->replace_reloc_prefix;
@@ -1431,7 +1431,7 @@ sub install_package_files {
     # Run the post installation code in the postaction tlpsrc entries
     # in case we are on w32 and the admin did install for himself only
     # we switch off admin mode
-    if (win32() && admin() && !$totlpdb->option("w32_multi_user")) {
+    if (win32() && admin() && !$self->option("w32_multi_user")) {
       non_admin();
     }
     # for now desktop_integration maps to both installation
