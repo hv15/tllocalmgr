@@ -99,7 +99,7 @@ use TeXLive::TLConfig qw($CategoriesRegexp $DefaultCategory $InfraLocation
 use TeXLive::TLUtils qw(dirname mkdirhier member win32 info log debug ddebug
                         tlwarn basename download_file merge_into tldie);
 use TeXLive::TLPOBJ;
-use TeXLive::TLWinGoo;
+#use TeXLive::TLWinGoo;
 
 use File::Temp qw/tempfile/;
 
@@ -149,6 +149,7 @@ sub new {
       = $self->from_file("$self->{'root'}/$InfraLocation/$DatabaseName");
     if ($nr_packages_read == 0) {
       # that is bad, we didn't read anything, so return undef.
+      warn "Could not initialize TLPDB from $self->{'root'}/$InfraLocation/$DatabaseName";
       return undef;
     }
   }
@@ -284,6 +285,8 @@ sub from_file {
     } elsif (-d "$rootpath/texmf/web2c") { # older
       $media = 'local_uncompressed';
     } elsif (-d "$rootpath/web2c") {
+      $media = 'local_uncompressed';
+    } elsif (-d "$rootpath/$InfraLocation") {
       $media = 'local_uncompressed';
     } elsif (-d "$rootpath/$Archive") {
       $media = 'local_compressed';
