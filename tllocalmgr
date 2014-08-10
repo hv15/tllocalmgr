@@ -17,12 +17,9 @@ die "You can't run this program as root\n" if $ENV{'USER'} eq "root";
 my $TEXMFVAR = "/var/lib/texmf";
 my $INSTALLEDPKGS = "$TEXMFVAR/arch/installedpkgs";
 
-our $VERSION = "0.4.3";
-our $YEAR = "2013";
-# my $CTANBASEURL="http://mirror.ctan.org/systems/texlive/tlnet";
-# for TexLive 2011 pretest
-my $CTANBASEURL = "http://www.math.utah.edu/pub/texlive/tlpretest";
-# my $CTANBASEURL="ftp://tug.org/texlive/tlnet"; # <<<< TEMPORARY
+our $VERSION = "0.4.6";
+our $YEAR = "2014";
+my $CTANBASEURL="http://mirror.ctan.org/systems/texlive/tlnet";
 
 my $ROOT = "$ENV{HOME}/.texlive/texmf-var/arch";
 my $LOCALDB = "$ROOT/tlpkg/texlive.tlpdb";
