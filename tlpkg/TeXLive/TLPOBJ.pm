@@ -1,4 +1,4 @@
-# $Id: TLPOBJ.pm 32912 2014-02-07 23:49:53Z karl $
+# $Id: TLPOBJ.pm 35751 2014-12-05 18:45:04Z karl $
 # TeXLive::TLPOBJ.pm - module for using tlpobj files
 # Copyright 2007-2014 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
@@ -15,7 +15,7 @@ use TeXLive::TLTREE;
 our $_tmp;
 my $_containerdir;
 
-my $svnrev = '$Revision: 32912 $';
+my $svnrev = '$Revision: 35751 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -134,7 +134,7 @@ sub from_fh {
             $self->{'docfiledata'}{$f}{'details'} = $1;
             $self->{'docfiledata'}{$f}{'language'} = $2;
           } else {
-            warn "Unparsable tagging in TLPDB line: =$line=";
+            tlwarn("$0: Unparsable tagging in TLPDB line: $line\n");
           }
         }
       } elsif ($lastcmd eq "binfiles") {
@@ -720,8 +720,7 @@ sub total_size {
 # Update the current TLPOBJ object with the information from the
 # corresponding entry in C<$tlc->entries>.
 #
-sub update_from_catalogue
-{
+sub update_from_catalogue {
   my ($self, $tlc) = @_;
   my $tlcname = $self->name;
   if (defined($self->catalogue)) {
@@ -744,7 +743,7 @@ sub update_from_catalogue
       $foo =~ s/^.Date: //;
       # trying to extract the interesting part of a subversion date
       # keyword expansion here, e.g.,
-      # $Date: 2014-02-08 00:49:53 +0100 (Sat, 08 Feb 2014) $
+      # $Date: 2014-12-05 19:45:04 +0100 (Fri, 05 Dec 2014) $
       # ->2007-08-15 19:43:35 +0100
       $foo =~ s/ \(.*\)( *\$ *)$//;  # maybe nothing after parens
       $self->cataloguedata->{'date'} = $foo;
@@ -782,28 +781,38 @@ sub update_from_catalogue
     # <documentation details='Package documentation' language='de'
     #   href='ctan:/macros/latex/contrib/juramisc/doc/jmgerdoc.pdf'/>
     # <ctan path='/macros/latex/contrib/juramisc'/>
-    my @tcdocfiles = keys %{$entry->docs};
-    my @tlpdocfiles = $self->docfiles;
-    foreach my $tcdocfile (@tcdocfiles) {
-      # basename also kills the ctan: prefix!
+    my @tcdocfiles = keys %{$entry->docs};  # Catalogue doc files.
+    my %tcdocfilebasenames;                 # basenames of those, as we go.
+    my @tlpdocfiles = $self->docfiles;      # TL doc files.
+    foreach my $tcdocfile (sort @tcdocfiles) {  # sort so shortest first
+      #warn "looking at tcdocfile $tcdocfile\n";
       my $tcdocfilebasename = $tcdocfile;
-      # remove the ctan: prefix
-      $tcdocfilebasename =~ s/^ctan://;
-      # remove the ctan path if present
-      my $tcctanpath = $entry->ctan ? $entry->ctan : "";
-      $tcdocfilebasename =~ s/^$tcctanpath//;
+      $tcdocfilebasename =~ s/^ctan://;  # remove ctan: prefix
+      $tcdocfilebasename =~ s,.*/,,;     # remove all but the base file name
+      #warn "  got basename $tcdocfilebasename\n";
+      #
+      # If we've already seen this basename, skip.  This is for the sake
+      # of README files, which can exist in different directories but
+      # get renamed into different files in TL for various annoying reasons;
+      # e.g., ibygrk, rsfs, songbook.  In these cases, it turns out we
+      # always prefer the first entry (top-level README).
+      next if exists $tcdocfilebasenames{$tcdocfilebasename};
+      $tcdocfilebasenames{$tcdocfilebasename} = 1;
+      #
       foreach my $tlpdocfile (@tlpdocfiles) {
-        if ($tlpdocfile =~ m/$tcdocfilebasename$/) {
-          # update the language/detail tags if present!
+        #warn "considering merge into tlpdocfile $tlpdocfile\n";
+        if ($tlpdocfile =~ m,/$tcdocfilebasename$,) {
+          # update the language/detail tags from Catalogue if present.
           if (defined($entry->docs->{$tcdocfile}{'details'})) {
             my $tmp = $entry->docs->{$tcdocfile}{'details'};
+            #warn "merging details for $tcdocfile: $tmp\n";
             # remove all embedded quotes, they are just a pain
             $tmp =~ s/"//g;
             $self->{'docfiledata'}{$tlpdocfile}{'details'} = $tmp;
           }
           if (defined($entry->docs->{$tcdocfile}{'language'})) {
             my $tmp = $entry->docs->{$tcdocfile}{'language'};
-            $tmp =~ s/"//g;
+            #warn "merging lang for $tcdocfile: $tmp\n";
             $self->{'docfiledata'}{$tlpdocfile}{'language'} = $tmp;
           }
         }

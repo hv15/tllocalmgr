@@ -1,12 +1,12 @@
-# $Id: TLPDB.pm 34045 2014-05-15 17:39:06Z karl $
+# $Id: TLPDB.pm 36041 2015-01-12 23:18:24Z karl $
 # TeXLive::TLPDB.pm - module for using tlpdb files
-# Copyright 2007-2014 Norbert Preining
+# Copyright 2007-2015 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLPDB;
 
-my $svnrev = '$Revision: 34045 $';
+my $svnrev = '$Revision: 36041 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -99,7 +99,7 @@ use TeXLive::TLConfig qw($CategoriesRegexp $DefaultCategory $InfraLocation
 use TeXLive::TLUtils qw(dirname mkdirhier member win32 info log debug ddebug
                         tlwarn basename download_file merge_into tldie);
 use TeXLive::TLPOBJ;
-#use TeXLive::TLWinGoo;
+use TeXLive::TLWinGoo;
 
 use File::Temp qw/tempfile/;
 
@@ -149,7 +149,6 @@ sub new {
       = $self->from_file("$self->{'root'}/$InfraLocation/$DatabaseName");
     if ($nr_packages_read == 0) {
       # that is bad, we didn't read anything, so return undef.
-      warn "Could not initialize TLPDB from $self->{'root'}/$InfraLocation/$DatabaseName";
       return undef;
     }
   }
@@ -176,7 +175,7 @@ The C<add_tlpobj> adds an object of the type TLPOBJ to the TLPDB.
 sub add_tlpobj {
   my ($self,$tlp) = @_;
   if ($self->is_virtual) {
-    tlwarn("cannot add tlpobj to a virtual tlpdb\n");
+    tlwarn("TLPDB: cannot add tlpobj to a virtual tlpdb\n");
     return 0;
   }
   $self->{'tlps'}{$tlp->name} = $tlp;
@@ -228,7 +227,7 @@ package is not present
 sub remove_tlpobj {
   my ($self,$pkg) = @_;
   if ($self->is_virtual) {
-    tlwarn("cannot remove tlpobj from a virtual tlpdb\n");
+    tlwarn("TLPDB: cannot remove tlpobj from a virtual tlpdb\n");
     return 0;
   }
   if (defined($self->{'tlps'}{$pkg})) {
@@ -252,7 +251,7 @@ It returns the actual number of packages (TLPOBJs) read from C<$filename>.
 sub from_file {
   my ($self, $path, $arg) = @_;
   if ($self->is_virtual) {
-    tlwarn("cannot initialize from file a virtual tlpdb\n");
+    tlwarn("TLPDB: cannot initialize a virtual tlpdb from_file\n");
     return 0;
   }
   if (@_ < 2) {
@@ -261,11 +260,12 @@ sub from_file {
   my $root_from_path = dirname(dirname($path));
   if (defined($self->{'root'})) {
     if ($self->{'root'} ne $root_from_path) {
-      # only warn if we are not given $arg = "-from-file"
-      if (!defined($arg) || ($arg ne "-from-file")) {
-        tlwarn("root=$self->{'root'}, root_from_path=$root_from_path\n");
-        tlwarn("Initialization from different location as originally given.\nHope you are sure!\n");
-      }
+     # only warn if we are not given $arg = "-from-file"
+     if (!defined($arg) || ($arg ne "-from-file")) {
+      tlwarn("TLPDB: initialization from different location than original;\n");
+      tlwarn("TLPDB: hope you are sure!\n");
+      tlwarn("TLPDB: root=$self->{'root'}, root_from_path=$root_from_path\n");
+     }
     }
   } else {
     $self->root($root_from_path);
@@ -285,8 +285,6 @@ sub from_file {
     } elsif (-d "$rootpath/texmf/web2c") { # older
       $media = 'local_uncompressed';
     } elsif (-d "$rootpath/web2c") {
-      $media = 'local_uncompressed';
-    } elsif (-d "$rootpath/$InfraLocation") {
       $media = 'local_uncompressed';
     } elsif (-d "$rootpath/$Archive") {
       $media = 'local_compressed';
@@ -398,7 +396,7 @@ the file handle given as argument.
 sub writeout {
   my $self = shift;
   if ($self->is_virtual) {
-    tlwarn("cannot write out a virtual tlpdb\n");
+    tlwarn("TLPDB: cannot writeout a virtual tlpdb\n");
     return 0;
   }
   my $fd = (@_ ? $_[0] : STDOUT);
@@ -421,7 +419,7 @@ as location. If the location is undefined, die.
 sub save {
   my $self = shift;
   if ($self->is_virtual) {
-    tlwarn("cannot save a virtual tlpdb\n");
+    tlwarn("TLPDB: cannot save a virtual tlpdb\n");
     return 0;
   }
   my $path = $self->location;
@@ -504,7 +502,7 @@ adds new dependencies they are not necessarily fulfilled.
 sub add_tlpcontainer {
   my ($self, $package, $ziplocation, $archrefs, $dest) = @_;
   if ($self->is_virtual) {
-    tlwarn("cannot add tlp container to a virtual tlpdb\n");
+    tlwarn("TLPDB: cannot add_tlpcontainer to a virtual tlpdb\n");
     return 0;
   }
   my @archs;
@@ -548,7 +546,7 @@ sub _add_tlpcontainer {
   } else {
     die "$0: No package $container (.zip or .xz) in $ziplocation";
   }
-  tlwarn("Huuu, this needs testing and error checking!\n");
+  tlwarn("TLPDB: Hmmm, this needs testing and error checking!\n");
   tlwarn("Should we use -a -- adapt line endings etc?\n");
   `$unpackprog $args`;
   # we only create/add tlpobj for arch eq "all"
@@ -620,7 +618,7 @@ sub media_of_package {
       if (defined($self->{'tlpdbs'}{$tag})) {
         return $self->{'tlpdbs'}{$tag}->media;
       } else {
-        tlwarn ("tag $tag is not known.\n");
+        tlwarn("TLPDB::media_of_package: tag not known: $tag\n");
         return;
       }
     } else {
@@ -669,7 +667,7 @@ sub list_packages {
       if (defined($self->{'tlpdbs'}{$tag})) {
         return $self->{'tlpdbs'}{$tag}->list_packages;
       } else {
-        tlwarn("TLPDB:list_packages: tag not defined: $tag\n");
+        tlwarn("TLPDB::list_packages: tag not defined: $tag\n");
         return 0;
       }
     }
@@ -970,7 +968,7 @@ sub _generate_listfile {
     foreach my $p (@lop) {
       my $subtlp = $self->get_package($p);
       if (!defined($subtlp)) {
-        tlwarn("TLPDB: $listname references $p, but it is not in tlpdb\n");
+        tlwarn("TLPDB: $listname references $p, but this is not in tlpdb\n");
       }
       $s += $subtlp->total_size;
     }
@@ -1049,7 +1047,7 @@ installation.
 sub root {
   my $self = shift;
   if ($self->is_virtual) {
-    tlwarn("cannot set/edit root of a virtual tlpdb\n");
+    tlwarn("TLPDB: cannot set/edit root of a virtual tlpdb\n");
     return 0;
   }
   if (@_) { $self->{'root'} = shift }
@@ -1072,7 +1070,7 @@ special value C<__MASTER>.
 sub location {
   my $self = shift;
   if ($self->is_virtual) {
-    tlwarn("cannot get location of a virtual tlpdb\n");
+    tlwarn("TLPDB: cannot get location of a virtual tlpdb\n");
     return 0;
   }
   return "$self->{'root'}/$InfraLocation/$DatabaseName";
@@ -1297,11 +1295,12 @@ sub sizes_of_packages {
   my ($self, $opt_src, $opt_doc, $arch_list_ref, @packs) = @_;
   @packs || ( @packs = $self->list_packages() );
   my @archs;
-  if (defined($arch_list_ref)) {
+  if ($arch_list_ref) {
     @archs = @$arch_list_ref;
+  } else {
+    # if nothing is passed on, we use all available archs
+    @archs = $self->available_architectures;
   }
-  # if nothing is passed on, then we keep @archs undefined, which means
-  # use all architectures
   my %tlpsizes;
   my %tlpobjs;
   my $totalsize;
@@ -1469,16 +1468,19 @@ sub install_package {
       if (defined($self->{'packages'}{$pkg}{'tags'}{$tag})) {
         return $self->{'tlpdbs'}{$tag}->install_package($pkg, $totlpdb);
       } else {
-        tlwarn("package $pkg not found in repository $tag\n");
+        tlwarn("TLPDB::install_package: package $pkg not found"
+               . " in repository $tag\n");
         return;
       }
     } else {
-      my ($maxtag, $maxrev, $maxtlp, $maxtlpdb) = $self->virtual_candidate($pkg);
+      my ($maxtag, $maxrev, $maxtlp, $maxtlpdb)
+        = $self->virtual_candidate($pkg);
       return $maxtlpdb->install_package($pkg, $totlpdb);
     }
   } else {
     if (defined($tag)) {
-      tlwarn("not a virtual database, ignoring tag $tag on installation of $pkg\n");
+      tlwarn("TLPDB: not a virtual tlpdb, ignoring tag $tag"
+              . " on installation of $pkg\n");
     }
     return $self->not_virtual_install_package($pkg, $totlpdb);
   }
@@ -1489,10 +1491,12 @@ sub not_virtual_install_package {
   my ($self, $pkg, $totlpdb) = @_;
   my $fromtlpdb = $self;
   my $ret;
-  die("TLPDB not initialized, cannot find tlpdb!") unless (defined($fromtlpdb));
+  die("TLPDB not initialized, cannot find tlpdb!")
+    unless (defined($fromtlpdb));
+
   my $tlpobj = $fromtlpdb->get_package($pkg);
   if (!defined($tlpobj)) {
-    tlwarn("$0: Cannot find package $pkg\n");
+    tlwarn("TLPDB::not_virtual_install_package: cannot find package: $pkg\n");
     return 0;
   } else {
     my $container_src_split = $fromtlpdb->config_src_container;
@@ -1537,7 +1541,7 @@ sub not_virtual_install_package {
       } elsif (-r "$root/$Archive/$pkg.tar.xz") {
         $container = "$root/$Archive/$pkg.tar.xz";
       } else {
-        tlwarn("Cannot find a package $pkg (.zip or .xz) in $root/$Archive\n");
+        tlwarn("TLPDB: cannot find package $pkg (.zip or .xz) in $root/$Archive\n");
         next;
       }
     } elsif (&media eq 'NET') {
@@ -1655,7 +1659,7 @@ sub _install_package {
   my $wget = $::progs{'wget'};
   my $xzdec = TeXLive::TLUtils::quotify_path_with_spaces($::progs{'xzdec'});
   if (!defined($wget) || !defined($xzdec)) {
-    tlwarn("_install_package: programs not set up properly, strange.\n");
+    tlwarn("TLPDB::_install_package: programs not set up properly; hmm.\n");
     return(0);
   }
 
@@ -1702,7 +1706,7 @@ sub _install_package {
       if (-r "$target/tlpkg/tlpobj/$pkg.tlpobj");
     return(1);
   } else {
-    tlwarn("_install_package: Don't know how to install $what\n");
+    tlwarn("TLPDB::_install_package: don't know how to install $what\n");
     return(0);
   }
 }
@@ -1724,7 +1728,7 @@ sub remove_package {
   my $tlp = $localtlpdb->get_package($pkg);
   my $usertree = $localtlpdb->setting("usertree");
   if (!defined($tlp)) {
-    tlwarn ("$pkg: package not present, cannot remove\n");
+    tlwarn ("TLPDB: package not present, cannot remove: $pkg\n");
   } else {
     my $currentarch = $self->platform();
     if ($pkg eq "texlive.infra" || $pkg eq "texlive.infra.$currentarch") {
@@ -1801,8 +1805,8 @@ sub remove_package {
     }
     if ($#badfiles >= 0) {
       # warn the user
-      tlwarn("The following files should be removed due to the removal of $pkg,\n");
-      tlwarn("but are part of another package, too.\n");
+      tlwarn("TLPDB: These files would have been removed due to removal of\n");
+      tlwarn("TLPDB: $pkg, but are part of another package:\n");
       for my $f (@badfiles) {
         tlwarn(" $f - $allfiles{$f}\n");
       }
@@ -1970,7 +1974,7 @@ sub _get_value_pkg {
     }
     return;
   }
-  tlwarn("$pkg not found, cannot read option $key.\n");
+  tlwarn("TLPDB: $pkg not found, cannot read option $key.\n");
   return;
 }
 
@@ -2015,7 +2019,7 @@ sub setting_pkg {
     if (defined $ret) {
       @ret = split(" ", $ret);
     } else {
-      tlwarn "TLPDB::setting_pkg: no $key, returning empty list ...\n";
+      tlwarn "TLPDB::setting_pkg: no $key, returning empty list\n";
       @ret = ();
     }
     return @ret;
@@ -2044,7 +2048,7 @@ sub setting {
     if (defined $ret) {
       @ret = split(" ", $ret);
     } else {
-      tlwarn "TLPDB::setting: no $key, returning empty list ...\n";
+      tlwarn("TLPDB::setting: no $key, returning empty list\n");
       @ret = ();
     }
     return @ret;
@@ -2093,7 +2097,7 @@ sub _keyshash {
         if (member($1, @allowed)) {
           $ret{$1} = $2;
         } else {
-          tlwarn("Unsupported option/setting $d\n");
+          tlwarn("TLPDB::_keyshash: Unsupported option/setting $d\n");
         }
       }
     }
@@ -2264,7 +2268,7 @@ sub make_virtual {
   my $self = shift;
   if (!$self->is_virtual) {
     if ($self->list_packages) {
-      tlwarn("Cannot convert a initialized tlpdb to virtual for now!\n");
+      tlwarn("TLPDB: cannot convert initialized tlpdb to virtual\n");
       return 0;
     }
     $self->{'virtual'} = 1;
@@ -2275,11 +2279,11 @@ sub make_virtual {
 sub virtual_get_tlpdb {
   my ($self, $tag) = @_;
   if (!$self->is_virtual) {
-    tlwarn("Cannot remove tlpdb from a non-virtual tlpdb!\n");
+    tlwarn("TLPDB: cannot remove tlpdb from a non-virtual tlpdb!\n");
     return 0;
   }
   if (!defined($self->{'tlpdbs'}{$tag})) {
-    tlwarn("TLPDB virtual_get_tlpdb: unknown tag $tag\n");
+    tlwarn("TLPDB::virtual_get_tlpdb: unknown tag: $tag\n");
     return 0;
   }
   return $self->{'tlpdbs'}{$tag};
@@ -2288,7 +2292,7 @@ sub virtual_get_tlpdb {
 sub virtual_add_tlpdb {
   my ($self, $tlpdb, $tag) = @_;
   if (!$self->is_virtual) {
-    tlwarn("Cannot add tlpdb to a non-virtual tlpdb!\n");
+    tlwarn("TLPDB: cannot virtual_add_tlpdb to a non-virtual tlpdb!\n");
     return 0;
   }
   $self->{'tlpdbs'}{$tag} = $tlpdb;
@@ -2304,11 +2308,11 @@ sub virtual_add_tlpdb {
 sub virtual_remove_tlpdb {
   my ($self, $tag) = @_;
   if (!$self->is_virtual) {
-    tlwarn("Cannot remove tlpdb from a non-virtual tlpdb!\n");
+    tlwarn("TLPDB: Cannot remove tlpdb from a non-virtual tlpdb!\n");
     return 0;
   }
   if (!defined($self->{'tlpdbs'}{$tag})) {
-    tlwarn("TLPDB virtual_remove_tlpdb: unknown tag $tag\n");
+    tlwarn("TLPDB: virtual_remove_tlpdb: unknown tag $tag\n");
     return 0;
   }
   for my $p ($self->{'tlpdbs'}{$tag}->list_packages) {
@@ -2324,7 +2328,7 @@ sub virtual_get_package {
   if (defined($self->{'packages'}{$pkg}{'tags'}{$tag})) {
     return $self->{'packages'}{$pkg}{'tags'}{$tag}{'tlp'};
   } else {
-    tlwarn("pkg $pkg not found in tag $tag\n");
+    tlwarn("TLPDB: virtual pkg $pkg not found in tag $tag\n");
     return;
   }
 }
@@ -2429,7 +2433,7 @@ sub virtual_pindata {
 sub virtual_update_pins {
   my $self = shift;
   if (!$self->is_virtual) {
-    tlwarn("Not-virtual databases cannot have pinning data.\n");
+    tlwarn("TLPDB::virtual_update_pins: Non-virtual tlpdb can't have pins.\n");
     return 0;
   }
   my $pincf = $self->{'pinfile'};
@@ -2439,7 +2443,7 @@ sub virtual_update_pins {
       # we recompose the values into lines again, as we *might* have
       # options later, i.e., lines of the format
       #   repo:pkg:opt
-      push @pins, $self->make_pin_data_from_line("$k:$v");
+      push (@pins, $self->make_pin_data_from_line("$k:$v"));
     }
   }
   $self->{'pindata'} = \@pins;
@@ -2449,7 +2453,7 @@ sub virtual_update_pins {
 sub virtual_pinning {
   my ($self, $pincf) = @_;
   if (!$self->is_virtual) {
-    tlwarn("Not-virtual databases cannot have pinning data.\n");
+    tlwarn("TLPDB::virtual_pinning: Non-virtual tlpdb can't have pins.\n");
     return 0;
   }
   if (!defined($pincf)) {
@@ -2536,8 +2540,8 @@ sub check_evaluate_pinning {
   # check that all pinning lines where hit
   for my $p (@pins) {
     next if defined($p->{'hit'});
-    tlwarn("tlmgr: pinning warning: the package pattern ", $p->{'glob'},
-           " on the line:\n  ", $p->{'line'},
+    tlwarn("tlmgr (TLPDB): pinning warning: the package pattern ",
+           $p->{'glob'}, " on the line:\n  ", $p->{'line'},
            "\n  does not match any package\n");
   }
 }
