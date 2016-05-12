@@ -1,21 +1,14 @@
-# $Id: TLPDB.pm 36041 2015-01-12 23:18:24Z karl $
+# $Id: TLPDB.pm 40898 2016-05-05 02:15:12Z preining $
 # TeXLive::TLPDB.pm - module for using tlpdb files
-# Copyright 2007-2015 Norbert Preining
+# Copyright 2007-2016 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLPDB;
 
-my $svnrev = '$Revision: 36041 $';
-my $_modulerevision;
-if ($svnrev =~ m/: ([0-9]+) /) {
-  $_modulerevision = $1;
-} else {
-  $_modulerevision = "unknown";
-}
-sub module_revision {
-  return $_modulerevision;
-}
+my $svnrev = '$Revision: 40898 $';
+my $_modulerevision = ($svnrev =~ m/: ([0-9]+) /) ? $1 : "unknown";
+sub module_revision { return $_modulerevision; }
 
 =pod
 
@@ -57,6 +50,8 @@ C<TeXLive::TLPDB> -- A database of TeX Live Packages
   $tlpdb->package_revision("packagename");
   $tlpdb->location;
   $tlpdb->platform;
+  $tlpdb->is_verified;
+  $tlpdb->verification_status;
   $tlpdb->config_src_container;
   $tlpdb->config_doc_container;
   $tlpdb->config_container_format;
@@ -96,9 +91,10 @@ use TeXLive::TLConfig qw($CategoriesRegexp $DefaultCategory $InfraLocation
       $DatabaseName $MetaCategoriesRegexp $Archive
       %TLPDBOptions %TLPDBSettings
       $RelocPrefix $RelocTree);
+use TeXLive::TLCrypto;
+use TeXLive::TLPOBJ;
 use TeXLive::TLUtils qw(dirname mkdirhier member win32 info log debug ddebug
                         tlwarn basename download_file merge_into tldie);
-use TeXLive::TLPOBJ;
 use TeXLive::TLWinGoo;
 
 use File::Temp qw/tempfile/;
@@ -132,12 +128,16 @@ sub new {
   my %params = @_;
   my $self = {
     root => $params{'root'},
-    tlps => $params{'tlps'}
+    tlps => $params{'tlps'},
+    verified => 0
   };
+  my $verify = defined($params{'verify'}) ? $params{'verify'} : 0;
+  ddebug("TLPDB new: verify = $verify\n");
   $_listdir = $params{'listdir'} if defined($params{'listdir'});
   bless $self, $class;
   if (defined($params{'tlpdbfile'})) {
-    my $nr_packages_read = $self->from_file($params{'tlpdbfile'}, '-from-file');
+    my $nr_packages_read = $self->from_file($params{'tlpdbfile'}, 
+      'from-file' => 1, 'verify' => $verify);
     if ($nr_packages_read == 0) {
       # that is bad, we didn't read anything, so return undef.
       return undef;
@@ -146,7 +146,8 @@ sub new {
   } 
   if (defined($self->{'root'})) {
     my $nr_packages_read
-      = $self->from_file("$self->{'root'}/$InfraLocation/$DatabaseName");
+      = $self->from_file("$self->{'root'}/$InfraLocation/$DatabaseName",
+        'verify' => $verify);
     if ($nr_packages_read == 0) {
       # that is bad, we didn't read anything, so return undef.
       return undef;
@@ -239,7 +240,7 @@ sub remove_tlpobj {
 
 =pod
 
-=item C<< $tlpdb->from_file($filename) >>
+=item C<< $tlpdb->from_file($filename, @args) >>
 
 The C<from_file> function initializes the C<TLPDB> if the root was not
 given at generation time.  See L<TLPDB::new> for more information.
@@ -249,7 +250,8 @@ It returns the actual number of packages (TLPOBJs) read from C<$filename>.
 =cut
 
 sub from_file {
-  my ($self, $path, $arg) = @_;
+  my ($self, $path, @args) = @_;
+  my %params = @args;
   if ($self->is_virtual) {
     tlwarn("TLPDB: cannot initialize a virtual tlpdb from_file\n");
     return 0;
@@ -260,8 +262,7 @@ sub from_file {
   my $root_from_path = dirname(dirname($path));
   if (defined($self->{'root'})) {
     if ($self->{'root'} ne $root_from_path) {
-     # only warn if we are not given $arg = "-from-file"
-     if (!defined($arg) || ($arg ne "-from-file")) {
+     if (!$params{'from-file'}) {
       tlwarn("TLPDB: initialization from different location than original;\n");
       tlwarn("TLPDB: hope you are sure!\n");
       tlwarn("TLPDB: root=$self->{'root'}, root_from_path=$root_from_path\n");
@@ -270,8 +271,10 @@ sub from_file {
   } else {
     $self->root($root_from_path);
   }
+  $self->verification_status("unknown");
   my $retfh;
   my $tlpdbfile;
+  my $is_verified = 0;
   # do media detection
   my $rootpath = $self->root;
   if ($rootpath =~ m,http://|ftp://,) {
@@ -299,64 +302,118 @@ sub from_file {
   # actually load the TLPDB
   if ($path =~ m;^((http|ftp)://|file:\/\/*);) {
     debug("TLPDB.pm: trying to initialize from $path\n");
+    # now $xzfh filehandle is open, the file created
+    # TLUtils::download_file will just overwrite what is there
+    # on windows that doesn't work, so we close the fh immediately
+    # this creates a short loophole, but much better than before anyway
+    my $tlpdbfh;
+    ($tlpdbfh, $tlpdbfile) = tempfile();
+    # same as above
+    close($tlpdbfh);
+    my $tlpdbfile_quote = $tlpdbfile;
+    if (win32()) {
+      $tlpdbfile =~ s!/!\\!g;
+    }
+    $tlpdbfile_quote = "\"$tlpdbfile\"";
     # if we have xzdec available we try the xz file
+    my $xz_succeeded = 0 ;
     if (defined($::progs{'xzdec'})) {
       # we first try the xz compressed file
-      #
-      # we have to create a temp file to download to
       my ($xzfh, $xzfile) = tempfile();
-      # now $xzfh filehandle is open, the file created
-      # TLUtils::download_file will just overwrite what is there
-      # on windows that doesn't work, so we close the fh immediately
-      # this creates a short loophole, but much better than before anyway
       close($xzfh);
       my $xzfile_quote = $xzfile;
-      # this is a variable of the whole sub as we have to remove the file
-      # before returning
-      my $tlpdbfh;
-      ($tlpdbfh, $tlpdbfile) = tempfile();
-      # same as above
-      close($tlpdbfh);
-      my $tlpdbfile_quote = $tlpdbfile;
       if (win32()) {
         $xzfile  =~ s!/!\\!g;
-        $tlpdbfile =~ s!/!\\!g;
       }
       $xzfile_quote = "\"$xzfile\"";
-      $tlpdbfile_quote = "\"$tlpdbfile\"";
       my $xzdec = TeXLive::TLUtils::quotify_path_with_spaces($::progs{'xzdec'});
       debug("trying to download $path.xz to $xzfile\n");
       my $ret = TeXLive::TLUtils::download_file("$path.xz", "$xzfile");
       # better to check both, the return value AND the existence of the file
       if ($ret && (-r "$xzfile")) {
         # ok, let the fun begin
-        debug("un-xzing $xzfile to $tlpdbfile\n");
+        debug("xzdec-ing $xzfile to $tlpdbfile\n");
         # xzdec *hopefully* returns 0 on success and anything else on failure
         # we don't have to negate since not zero means error in the shell
         # and thus in perl true
         if (system("$xzdec <$xzfile_quote >$tlpdbfile_quote")) {
-          debug("un-xzing $xzfile failed, tryin gplain file\n");
+          debug("$xzdec $xzfile failed, trying plain file\n");
           # to be sure we unlink the xz file and the tlpdbfile
           unlink($xzfile);
-          unlink($tlpdbfile);
         } else {
           unlink($xzfile);
-          open($retfh, "<$tlpdbfile") || die "$0: open($tlpdbfile) failed: $!";
+          $xz_succeeded = 1;
           debug("found the uncompressed xz file\n");
         }
       } 
     } else {
       debug("no xzdec defined, not trying tlpdb.xz ...\n");
     }
-    if (!defined($retfh)) {
+    if (!$xz_succeeded) {
       debug("TLPDB: downloading $path.xz didn't succeed, try $path\n");
-      # xz did not succeed, so try the normal file
-      $retfh = TeXLive::TLUtils::download_file($path, "|");
-      if (!$retfh) {
-        die "open tlpdb($path) failed: $!";
+      my $ret = TeXLive::TLUtils::download_file($path, $tlpdbfile);
+      # better to check both, the return value AND the existence of the file
+      if ($ret && (-r "$tlpdbfile")) {
+        # do nothing
+      } else {
+        unlink($tlpdbfile);
+        die "$0: open tlpdb($path) failed: $!";
       }
     }
+    # if we are still here, then either the xz version was downloaded
+    # and unpacked, or the non-xz version was downloaded, and in both
+    # cases the result, i.e., the unpackaged tlpdb, is in $tlpdbfile
+    #
+    # before we open and proceed, verify the downloaded file
+    if ($params{'verify'} && $media ne 'local_uncompressed') {
+      my ($r, $m) = TeXLive::TLCrypto::verify_checksum($tlpdbfile, "$path.$TeXLive::TLConfig::ChecksumExtension");
+      if ($r == 1) {
+        tldie("$0: checksum error when downloading $tlpdbfile from $path: $m\n");
+      } elsif ($r == 2) {
+        tldie("$0: signature verification error of $tlpdbfile from $path: $m\n");
+      } elsif ($r == -1) {
+        tldie("$0: connection problems, cannot download: $m\n");
+      } elsif ($r == -2) {
+        debug("$0: remote database checksum is not signed, continuing anyway!\n");
+        $self->verification_status("not signed");
+      } elsif ($r == -3) {
+        debug("$0: TLPDB: no gpg available, continuing anyway!\n");
+        $self->verification_status("gnupg not available");
+      } elsif ($r == -4) {
+        debug("$0: TLPDB: pubkey missing, continuing anyway!\n");
+        $self->verification_status("pubkey missing");
+      } elsif ($r == 0) {
+        $is_verified = 1;
+        $self->verification_status("verified");
+      } else {
+        tldie("$0: unexpected return value from verify_checksum: $r\n");
+      }
+    }
+    open($retfh, "<$tlpdbfile") || die "$0: open($tlpdbfile) failed: $!";
   } else {
+    if ($params{'verify'} && $media ne 'local_uncompressed') {
+      my ($r, $m) = TeXLive::TLCrypto::verify_checksum($path, "$path.$TeXLive::TLConfig::ChecksumExtension");
+      if ($r == 1) {
+        tldie("$0: checksum error when downloading $path from $path: $m\n");
+      } elsif ($r == 2) {
+        tldie("$0: signature verification error of $path from $path: $m\n");
+      } elsif ($r == -1) {
+        tldie("$0: connection problems, cannot download: $m\n");
+      } elsif ($r == -2) {
+        debug("$0: remote database checksum is not signed, continuing anyway!\n");
+        $self->verification_status("not signed");
+      } elsif ($r == -3) {
+        debug("$0: TLPDB: no gpg available, continuing anyway!\n");
+        $self->verification_status("gnupg not available");
+      } elsif ($r == -4) {
+        debug("$0: TLPDB: pubkey missing, continuing anyway!\n");
+        $self->verification_status("pubkey missing");
+      } elsif ($r == 0) {
+        $is_verified = 1;
+      } else {
+        tldie("$0: unexpected return value from verify_checksum: $r\n");
+      }
+    }
     open(TMP, "<$path") || die "$0: open($path) failed: $!";
     $retfh = \*TMP;
   }
@@ -375,7 +432,9 @@ sub from_file {
     debug("  $path\n");
   }
 
-  # remove the un-xz-ed tlpdb file from temp dir
+  $self->{'verified'} = $is_verified;
+
+  # remove the xzdec-ed tlpdb file from temp dir
   # THAT IS RACY!!! we should fix that in some better way with tempfile
   close($retfh);
   unlink($tlpdbfile) if $tlpdbfile;
@@ -815,14 +874,13 @@ containing a file named C<filename>.
 # TODO adapt for searching in *all* tags ???
 sub find_file {
   my ($self,$fn) = @_;
-  my @ret;
-  foreach my $pkg ($self->list_packages) {
-    my @foo = $self->get_package($pkg)->contains_file($fn);
-    foreach my $f ($self->get_package($pkg)->contains_file($fn)) {
-      push @ret, "$pkg:$f";
+  my @ret = ();
+  for my $pkg ($self->list_packages) {
+    for my $f ($self->get_package($pkg)->contains_file($fn)) {
+      push (@ret, "$pkg:$f");
     }
   }
-  return(@ret);
+  return @ret;
 }
 
 =pod
@@ -1099,6 +1157,43 @@ sub platform {
 
 =pod
 
+=item C<< $tlpdb->is_verified >>
+
+Returns 0/1 depending on whether the tlpdb was verified by checking
+the cryptographic signature.
+
+=cut
+
+sub is_verified {
+  my $self = shift;
+  if ($self->is_virtual) {
+    tlwarn("TLPDB: cannot set/edit verified property of a virtual tlpdb\n");
+    return 0;
+  }
+  if (@_) { $self->{'verified'} = shift }
+  return $self->{'verified'};
+}
+=pod
+
+=item C<< $tlpdb->verification_status >>
+
+Returns a short textual explanation of the verification status. 
+In particular if the database is not verified, it returns the reason.
+
+=cut
+
+sub verification_status {
+  my $self = shift;
+  if ($self->is_virtual) {
+    tlwarn("TLPDB: cannot set/edit verification status of a virtual tlpdb\n");
+    return 0;
+  }
+  if (@_) { $self->{'verification_status'} = shift }
+  return $self->{'verification_status'};
+}
+
+=pod
+
 =item C<< $tlpdb->listdir >>
 
 The function C<listdir> allows to read and set the packages variable
@@ -1370,9 +1465,12 @@ sub install_package_files {
     # - create a tmp directory
     my $tmpdir = TeXLive::TLUtils::tl_tmpdir();
     # - unpack everything there
-    if (!TeXLive::TLUtils::unpack($f, $tmpdir)) {
-      tlwarn("TLPDB::install_package_files: couldn't install $f\n");
-      next;
+    {
+      my ($ret, $msg) = TeXLive::TLUtils::unpack($f, $tmpdir);
+      if (!$ret) {
+        tlwarn("TLPDB::install_package_files: $msg\n");
+        next;
+      }
     }
     # we are  still here, so the files have been unpacked properly
     # we need now to find the tlpobj in $tmpdir/tlpkg/tlpobj/
@@ -1405,9 +1503,9 @@ sub install_package_files {
     # 
     # remove the RELOC prefix, but do NOT replace it with RelocTree
     @installfiles = map { s!^$TeXLive::TLConfig::RelocPrefix/!!; $_; } @installfiles;
-    # if the first argument of _install_package is scalar, it is the
+    # if the first argument of _install_data is scalar, it is the
     # place from where files should be installed
-    if (!_install_package ($tmpdir, \@installfiles, $reloc, \@installfiles, $self)) {
+    if (!_install_data ($tmpdir, \@installfiles, $reloc, \@installfiles, $self)) {
       tlwarn("TLPDB::install_package_files: couldn't install $what!\n"); 
       next;
     }
@@ -1536,18 +1634,16 @@ sub not_virtual_install_package {
     if ($media eq 'local_uncompressed') {
       $container = \@installfiles;
     } elsif ($media eq 'local_compressed') {
-      if (-r "$root/$Archive/$pkg.zip") {
-        $container = "$root/$Archive/$pkg.zip";
-      } elsif (-r "$root/$Archive/$pkg.tar.xz") {
+      if (-r "$root/$Archive/$pkg.tar.xz") {
         $container = "$root/$Archive/$pkg.tar.xz";
       } else {
-        tlwarn("TLPDB: cannot find package $pkg (.zip or .xz) in $root/$Archive\n");
+        tlwarn("TLPDB: cannot find package $pkg.tar.xz) in $root/$Archive\n");
         next;
       }
     } elsif (&media eq 'NET') {
       $container = "$root/$Archive/$pkg.$TeXLive::TLConfig::DefaultContainerExtension";
     }
-    $self->_install_package ($container, $reloc, \@installfiles, $totlpdb) 
+    $self->_install_data ($container, $reloc, \@installfiles, $totlpdb, $tlpobj->containersize, $tlpobj->containermd5)
       || return(0);
     # if we are installing from local_compressed or NET we have to fetch the respective
     # source and doc packages $pkg.source and $pkg.doc and install them, too
@@ -1566,13 +1662,13 @@ sub not_virtual_install_package {
       if ($container_src_split && $opt_src && $tlpobj->srcfiles) {
         my $srccontainer = $container;
         $srccontainer =~ s/(\.tar\.xz|\.zip)$/.source$1/;
-        $self->_install_package ($srccontainer, $reloc, \@installfiles, $totlpdb) 
+        $self->_install_data ($srccontainer, $reloc, \@installfiles, $totlpdb, $tlpobj->srccontainersize, $tlpobj->srccontainermd5)
           || return(0);
       }
       if ($container_doc_split && $real_opt_doc && $tlpobj->docfiles) {
         my $doccontainer = $container;
         $doccontainer =~ s/(\.tar\.xz|\.zip)$/.doc$1/;
-        $self->_install_package ($doccontainer, $reloc, \@installfiles, $totlpdb) 
+        $self->_install_data ($doccontainer, $reloc, \@installfiles, $totlpdb, $tlpobj->doccontainersize, $tlpobj->doccontainermd5)
           || return(0);
       }
       #
@@ -1615,8 +1711,13 @@ sub not_virtual_install_package {
     # archives (.tar.xz) but at DVD install time we don't have them
     my $tlpod = $totlpdb->root . "/tlpkg/tlpobj";
     mkdirhier( $tlpod );
-    open(TMP,">$tlpod/".$tlpobj->name.".tlpobj") or
-      die("Cannot open tlpobj file for ".$tlpobj->name);
+    my $count = 0;
+    until (open(TMP,">$tlpod/".$tlpobj->name.".tlpobj")) {
+      # The open might fail for no good reason on Windows.
+      # Try again for a while, but not forever.
+      if ($count++ == 100) { die "$0: open($tlpobj_file) failed: $!"; }
+      select (undef, undef, undef, .1);  # sleep briefly
+    }
     $tlpobj->writeout(\*TMP);
     close(TMP);
     $totlpdb->add_tlpobj($tlpobj);
@@ -1643,12 +1744,15 @@ sub not_virtual_install_package {
 }
 
 #
-# _install_package
+# _install_data
 # actually does the installation work
 # returns 1 on success and 0 on error
 #
-sub _install_package {
-  my ($self, $what, $reloc, $filelistref, $totlpdb) = @_;
+# if the first argument is a string, then files are taken from this directory
+# otherwise it is a tlpdb from where to install
+#
+sub _install_data {
+  my ($self, $what, $reloc, $filelistref, $totlpdb, $whatsize, $whatcheck) = @_;
 
   my $target = $totlpdb->root;
   my $tempdir = "$target/temp";
@@ -1659,7 +1763,7 @@ sub _install_package {
   my $wget = $::progs{'wget'};
   my $xzdec = TeXLive::TLUtils::quotify_path_with_spaces($::progs{'xzdec'});
   if (!defined($wget) || !defined($xzdec)) {
-    tlwarn("TLPDB::_install_package: programs not set up properly; hmm.\n");
+    tlwarn("TLPDB::_install_data: programs not set up properly; hmm.\n");
     return(0);
   }
 
@@ -1690,15 +1794,15 @@ sub _install_package {
     }
     # we always assume that copy will work
     return(1);
-  } elsif ($what =~ m,\.tar(\.xz)?$,) {
+  } elsif ($what =~ m,\.tar\.xz$,) {
     if ($reloc) {
       if (!$totlpdb->setting("usertree")) {
         $target .= "/$TeXLive::TLConfig::RelocTree";
       }
     }
-    my $pkg = TeXLive::TLUtils::unpack($what, $target);
-    if (!$pkg) {
-      tlwarn("TLPDB::_install_package: couldn't unpack $what to $target\n");
+    my ($ret, $pkg) = TeXLive::TLUtils::unpack($what, $target, 'size' => $whatsize, 'checksum' => $whatcheck);
+    if (!$ret) {
+      tlwarn("TLPDB::_install_package: $pkg\n");
       return(0);
     }
     # remove the $pkg.tlpobj, we recreate it anyway again
@@ -2663,10 +2767,9 @@ C<00texlive.config.tlpsrc>.
 
 =head1 SEE ALSO
 
-The modules L<TeXLive::TLPSRC>, L<TeXLive::TLPOBJ>, 
-L<TeXLive::TLTREE>, L<TeXLive::TLUtils> and the
-document L<Perl-API.txt> and the specification in the TeX Live
-repository trunk/Master/tlpkg/doc/.
+The modules L<TeXLive::TLPSRC>, L<TeXLive::TLPOBJ>, L<TeXLive::TLTREE>,
+L<TeXLive::TLUtils>, etc., and the documentation in the repository:
+C<Master/tlpkg/doc/>.
 
 =head1 AUTHORS AND COPYRIGHT
 

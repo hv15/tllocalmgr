@@ -1,27 +1,20 @@
-# $Id: TLUtils.pm 37234 2015-05-06 20:30:33Z siepo $
+# $Id: TLUtils.pm 40971 2016-05-09 03:11:03Z preining $
 # TeXLive::TLUtils.pm - the inevitable utilities for TeX Live.
-# Copyright 2007-2015 Norbert Preining, Reinhard Kotucha
+# Copyright 2007-2016 Norbert Preining, Reinhard Kotucha
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLUtils;
 
-my $svnrev = '$Revision: 37234 $';
-my $_modulerevision;
-if ($svnrev =~ m/: ([0-9]+) /) {
-  $_modulerevision = $1;
-} else {
-  $_modulerevision = "unknown";
-}
-sub module_revision {
-  return $_modulerevision;
-}
+my $svnrev = '$Revision: 40971 $';
+my $_modulerevision = ($svnrev =~ m/: ([0-9]+) /) ? $1 : "unknown";
+sub module_revision { return $_modulerevision; }
 
 =pod
 
 =head1 NAME
 
-C<TeXLive::TLUtils> -- utilities used in the TeX Live infrastructure
+C<TeXLive::TLUtils> -- utilities used in TeX Live infrastructure
 
 =head1 SYNOPSIS
 
@@ -77,9 +70,8 @@ C<TeXLive::TLUtils> -- utilities used in the TeX Live infrastructure
   TeXLive::TLUtils::create_language_lua($tlpdb,$dest,$localconf);
   TeXLive::TLUtils::time_estimate($totalsize, $donesize, $starttime)
   TeXLive::TLUtils::install_packages($from_tlpdb,$media,$to_tlpdb,$what,$opt_src, $opt_doc)>);
-  TeXLive::TLUtils::install_package($what, $filelistref, $target, $platform);
   TeXLive::TLUtils::do_postaction($how, $tlpobj, $do_fileassocs, $do_menu, $do_desktop, $do_script);
-  TeXLive::TLUtils::announce_execute_actions($how, @executes);
+  TeXLive::TLUtils::announce_execute_actions($how, @executes, $what);
   TeXLive::TLUtils::add_symlinks($root, $arch, $sys_bin, $sys_man, $sys_info);
   TeXLive::TLUtils::remove_symlinks($root, $arch, $sys_bin, $sys_man, $sys_info);
   TeXLive::TLUtils::w32_add_to_path($bindir, $multiuser);
@@ -99,7 +91,6 @@ C<TeXLive::TLUtils> -- utilities used in the TeX Live infrastructure
   TeXLive::TLUtils::forward_slashify($path_from_user);
   TeXLive::TLUtils::give_ctan_mirror();
   TeXLive::TLUtils::give_ctan_mirror_base();
-  TeXLive::TLUtils::tlmd5($path);
   TeXLive::TLUtils::compare_tlpobjs($tlpA, $tlpB);
   TeXLive::TLUtils::compare_tlpdbs($tlpdbA, $tlpdbB);
   TeXLive::TLUtils::report_tlpdb_differences(\%ret);
@@ -116,11 +107,9 @@ use vars qw(
   $::LOGFILENAME @::LOGLINES 
   @::debug_hook @::ddebug_hook @::dddebug_hook @::info_hook @::warn_hook
   @::install_packages_hook
-  $::latex_updated
   $::machinereadable
   $::no_execute_actions
   $::regenerate_all_formats
-  $::tex_updated
   $TeXLive::TLDownload::net_lib_avail
 );
 
@@ -175,7 +164,6 @@ BEGIN {
     &give_ctan_mirror_base
     &create_mirror_list
     &extract_mirror_entry
-    &tlmd5
     &wsystem
     &xsystem
     &run_cmd
@@ -201,9 +189,9 @@ BEGIN {
 }
 
 use Cwd;
-use Digest::MD5;
 use Getopt::Long;
 use File::Temp;
+use File::Copy qw//;
 
 use TeXLive::TLConfig;
 
@@ -216,7 +204,7 @@ $::opt_verbosity = 0;  # see process_logging_options
 
 =item C<platform>
 
-If C<$^O=~/MSWin(32|64)$/i> is true we know that we're on
+If C<$^O =~ /MSWin/i> is true we know that we're on
 Windows and we set the global variable C<$::_platform_> to C<win32>.
 Otherwise we call C<platform_name> with the output of C<config.guess>
 as argument.
@@ -565,7 +553,7 @@ sub run_cmd {
 
 =back
 
-=head2 File Utilities
+=head2 File utilities
 
 =over 4
 
@@ -640,8 +628,8 @@ sub basename {
 
 =item C<tl_abs_path($path)>
 
-# Other than Cwd::abs_path, tl_abs_path also works
-# if only the grandparent exists.
+# Other than Cwd::abs_path, tl_abs_path also works if the argument does not
+# yet exist as long as the path does not contain '..' components.
 
 =cut
 
@@ -650,33 +638,34 @@ sub tl_abs_path {
   if (win32) {
     $path=~s!\\!/!g;
   }
-  my $ret;
-  eval {$ret = Cwd::abs_path($path);}; # eval needed for w32
-  return $ret if defined $ret;
-  # $ret undefined: probably the parent does not exist.
-  # But we also want an answer if only the grandparent exists.
-  my ($parent, $base) = dirname_and_basename($path);
-  return undef unless defined $parent;
-  eval {$ret = Cwd::abs_path($parent);};
-  if (defined $ret) {
-    if ($ret =~ m!/$! or $base =~ m!^/!) {
-      $ret = "$ret$base";
-    } else {
-      $ret = "$ret/$base";
-    }
-    return $ret;
-  } else {
-    my ($pparent, $pbase) = dirname_and_basename($parent);
-    return undef unless defined $pparent;
-    eval {$ret = Cwd::abs_path($pparent);};
-    return undef unless defined $ret;
-    if ($ret =~ m!/$!) {
-      $ret = "$ret$pbase/$base";
-    } else {
-      $ret = "$ret/$pbase/$base";
-    }
-    return $ret;
+  if (-e $path) {
+    $path = Cwd::abs_path($path);
+  } elsif ($path eq '.') {
+    $path = Cwd::getcwd();
+  } else{
+    # collapse /./ components
+    $path =~ s!/\./!/!g;
+    # no support for .. path components or for win32 long-path syntax
+    # (//?/ path prefix)
+    die "Unsupported path syntax" if $path =~ m!/\.\./! || $path =~ m!/\.\.$!
+      || $path =~ m!^\.\.!;
+    die "Unsupported path syntax" if win32() && $path =~ m!^//\?/!;
+    if ($path !~ m!^(.:)?/!) { # relative path
+      if (win32() && $path =~ /^.:/) { # drive letter
+        my $dcwd;
+        # starts with drive letter: current dir on drive
+        $dcwd = Cwd::getdcwd ($1);
+        $dcwd .= '/' unless $dcwd =~ m!/$!;
+        return $dcwd.$path;
+      } else { # relative path without drive letter
+        my $cwd = Cwd::getcwd();
+        $cwd .= '/' unless $cwd =~ m!/$!;
+        return $cwd . $path;
+      }
+    } # else absolute path
   }
+  $path =~ s!/$!! unless $path =~ m!^(.:)?/$!;
+  return $path;
 }
 
 
@@ -698,13 +687,19 @@ sub dir_creatable {
   #print STDERR "testing $path\n";
   $path =~ s!\\!/!g if win32;
   return 0 unless -d $path;
-  $path =~ s!/$!!;
+  $path .= '/' unless $path =~ m!/$!;
   #print STDERR "testing $path\n";
-  my $i = 0;
-  my $too_large = 100000;
-  while ((-e $path . "/" . $i) and $i<$too_large) { $i++; }
-  return 0 if $i>=$too_large;
-  my $d = $path."/".$i;
+  my $d;
+  for my $i (1..100) {
+    $d = "";
+    # find a non-existent dirname
+    $d = $path . int(rand(1000000));
+    last unless -e $d;
+  }
+  if (!$d) {
+    tlwarn("Cannot find available testdir name\n");
+    return 0;
+  }
   #print STDERR "creating $d\n";
   return 0 unless mkdir $d;
   return 0 unless -d $d;
@@ -723,10 +718,6 @@ a fileserver.
 
 =cut
 
-# Theoretically, the test below, which uses numbers as names, might
-# lead to a race condition. OTOH, it should work even on a very
-# broken Perl.
-
 # The Unix test gives the wrong answer when used under Windows Vista
 # with one of the `virtualized' directories such as Program Files:
 # lacking administrative permissions, it would write successfully to
@@ -737,14 +728,19 @@ sub dir_writable {
   my ($path) = @_;
   return 0 unless -d $path;
   $path =~ s!\\!/!g if win32;
-  $path =~ s!/$!!;
+  $path .= '/' unless $path =~ m!/$!;
   my $i = 0;
-  my $too_large = 100000;
-  while ((-e "$path/$i") && $i < $too_large) {
-    $i++;
+  my $f;
+  for my $i (1..100) {
+    $f = "";
+    # find a non-existent filename
+    $f = $path . int(rand(1000000));
+    last unless -e $f;
   }
-  return 0 if $ i >= $too_large;
-  my $f = "$path/$i";
+  if (!$f) {
+    tlwarn("Cannot find available testfile name\n");
+    return 0;
+  }
   return 0 if ! open (TEST, ">$f");
   my $written = 0;
   $written = (print TEST "\n");
@@ -1343,96 +1339,10 @@ sub install_packages {
     foreach my $h (@::install_packages_hook) {
       &$h($n,$totalnr);
     }
-    my $real_opt_doc = $opt_doc;
-    my $container;
-    my @installfiles;
-    push @installfiles, $tlpobj->runfiles;
-    push @installfiles, $tlpobj->allbinfiles;
-    push @installfiles, $tlpobj->srcfiles if ($opt_src);
-    push @installfiles, $tlpobj->docfiles if ($real_opt_doc);
-    if ($media eq 'local_uncompressed') {
-      $container = [ $root, @installfiles ];
-    } elsif ($media eq 'local_compressed') {
-      if (-r "$root/$Archive/$package.zip") {
-        $container = "$root/$Archive/$package.zip";
-      } elsif (-r "$root/$Archive/$package.tar.xz") {
-        $container = "$root/$Archive/$package.tar.xz";
-      } else {
-        tlwarn("No package $package (.zip or .xz) in $root/$Archive\n");
-        next;
-      }
-    } elsif ($media eq 'NET') {
-      $container = "$root/$Archive/$package.$DefaultContainerExtension";
-    }
-    if (!install_package($container, $reloc, $tlpobj->containersize,
-                         $tlpobj->containermd5, \@installfiles,
-                         $totlpdb->root, $vars{'this_platform'})) {
-      # we already warn in install_package that something bad happened,
-      # so only return here
+    # return false if something went wrong
+    if (!$fromtlpdb->install_package($package, $totlpdb)) {
       return 0;
     }
-    # if we are installing from compressed media we have to fetch the respective
-    # source and doc packages $pkg.source and $pkg.doc and install them, too
-    if (($media eq 'NET') || ($media eq 'local_compressed')) {
-      # we install split containers under the following conditions:
-      # - the container were split generated
-      # - src/doc files should be installed
-      # (- the package is not already a split one (like .i386-linux))
-      # the above test has been removed since that would mean that packages
-      # with a dot like texlive.infra will never have the docfiles installed
-      # that is already happening ...bummer. But since we already check
-      # whether there are src/docfiles present at all that is fine
-      # - there are actually src/doc files present
-      if ($container_src_split && $opt_src && $tlpobj->srcfiles) {
-        my $srccontainer = $container;
-        $srccontainer =~ s/(\.tar\.xz|\.zip)$/.source$1/;
-        if (!install_package($srccontainer, $reloc, $tlpobj->srccontainersize,
-                             $tlpobj->srccontainermd5, \@installfiles,
-                             $totlpdb->root, $vars{'this_platform'})) {
-          return 0;
-        }
-      }
-      if ($container_doc_split && $real_opt_doc && $tlpobj->docfiles) {
-        my $doccontainer = $container;
-        $doccontainer =~ s/(\.tar\.xz|\.zip)$/.doc$1/;
-        if (!install_package($doccontainer, $reloc,
-                             $tlpobj->doccontainersize,
-                             $tlpobj->doccontainermd5, \@installfiles,
-                             $totlpdb->root, $vars{'this_platform'})) {
-          return 0;
-        }
-      }
-    }
-    # we don't want to have wrong information in the tlpdb, so remove the
-    # src/doc files if they are not installed ...
-    if (!$opt_src) {
-      $tlpobj->clear_srcfiles;
-    }
-    if (!$real_opt_doc) {
-      $tlpobj->clear_docfiles;
-    }
-    # if a package is relocatable we have to cancel the reloc prefix
-    # before we save it to the local tlpdb
-    if ($tlpobj->relocated) {
-      $tlpobj->replace_reloc_prefix;
-    }
-    $totlpdb->add_tlpobj($tlpobj);
-
-    # we have to write out the tlpobj file since it is contained in the
-    # archives (.tar.xz), but at uncompressed-media install time we
-    # don't have them.
-    my $tlpod = $totlpdb->root . "/tlpkg/tlpobj";
-    mkdirhier($tlpod);
-    my $count = 0;
-    my $tlpobj_file = ">$tlpod/" . $tlpobj->name . ".tlpobj";
-    until (open(TMP, $tlpobj_file)) {
-      # The open might fail for no good reason on Windows.
-      # Try again for a while, but not forever.
-      if ($count++ == 100) { die "$0: open($tlpobj_file) failed: $!"; }
-      select (undef, undef, undef, .1);  # sleep briefly
-    }
-    $tlpobj->writeout(\*TMP);
-    close(TMP);
     $donesize += $tlpsizes{$package};
   }
   my $totaltime = time() - $starttime;
@@ -1441,173 +1351,6 @@ sub install_packages {
   info(sprintf("Time used for installing the packages: %02d:%02d\n",
        $totmin, $totsec));
   $totlpdb->save;
-  return 1;
-}
-
-
-=item C<install_package($what, $reloc, $size, $md5, $filelistref, $target, $platform)>
-
-This function installs the files given in @$filelistref from C<$what>
-into C<$target>.
-
-C<$size> gives the size in bytes of the container, or -1 if we are
-installing from uncompressed media, i.e., from a list of files to be copied.
-
-If C<$what> is a reference to a list of files then these files are
-assumed to be readable and are copied to C<$target>, creating dirs on
-the way. In this case the list C<@$filelistref> is not taken into
-account.
-
-If C<$what> starts with C<http://> or C<ftp://> then C<$what> is
-downloaded from the net and piped through C<xzdec> and C<tar>.
-
-If $what ends with C<.tar.xz> (but does not start with C<http://> or
-C<ftp://>, but possibly with C<file:/>) it is assumed to be a readable
-file on the system and is likewise piped through C<xzdec> and C<tar>.
-
-In both of these cases currently the list C<$@filelistref> currently
-is not taken into account (should be fixed!).
-
-if C<$reloc> is true the container (NET or local_compressed mode) is packaged in a way
-that the initial texmf-dist is missing.
-
-Returns 1 on success and 0 on error.
-
-=cut
-
-sub install_package {
-  my ($what, $reloc,  $whatsize, $whatmd5, $filelistref, $target, $platform) = @_;
-
-  my @filelist = @$filelistref;
-
-  my $tempdir = "$target/temp";
-
-  # we assume that $::progs has been set up!
-  my $wget = $::progs{'wget'};
-  my $xzdec = quotify_path_with_spaces($::progs{'xzdec'});
-  if (!defined($wget) || !defined($xzdec)) {
-    tlwarn("install_package: wget/xzdec programs not set up properly.\n");
-    return 0;
-  }
-  if (ref $what) {
-    # we are getting a ref to a list of files, so install from uncompressed media
-    my ($root, @files) = @$what;
-    foreach my $file (@files) {
-      # @what is taken, not @filelist!
-      # is this still needed?
-      my $dn=dirname($file);
-      mkdirhier("$target/$dn");
-      copy "$root/$file", "$target/$dn";
-    }
-  } elsif ($what =~ m,\.tar.xz$,) {
-    # this is the case when we install from compressed media
-    #
-    # in all other cases we create temp files .tar.xz (or use the present
-    # one), xzdec them, and then call tar
-
-    # if we are unpacking a relocated container we adjust the target
-    if ($reloc) {
-      $target .= "/$TeXLive::TLConfig::RelocTree" if $reloc;
-      mkdir($target) if (! -d $target);
-    }
-
-    my $fn = basename($what);
-    my $pkg = $fn;
-    $pkg =~ s/\.tar\.xz$//;
-    mkdirhier("$tempdir");
-    my $xzfile = "$tempdir/$fn";
-    my $tarfile  = "$tempdir/$fn"; $tarfile =~ s/\.xz$//;
-    my $xzfile_quote = $xzfile;
-    my $tarfile_quote = $tarfile;
-    if (win32()) {
-      $xzfile =~ s!/!\\!g;
-      $tarfile =~ s!/!\\!g;
-      $target =~ s!/!\\!g;
-    }
-    $xzfile_quote = "\"$xzfile\"";
-    $tarfile_quote = "\"$tarfile\"";
-    my $gotfiledone = 0;
-    if (-r $xzfile) {
-      # check that the downloaded file is not partial
-      if ($whatsize >= 0) {
-        # we have the size given, so check that first
-        my $size = (stat $xzfile)[7];
-        if ($size == $whatsize) {
-          # we want to check also the md5sum if we have it present
-          if ($whatmd5) {
-            if (tlmd5($xzfile) eq $whatmd5) {
-              $gotfiledone = 1;
-            } else {
-              tlwarn("Downloaded $what, size equal, but md5sum differs;\n",
-                     "downloading again.\n");
-            }
-          } else {
-            # size ok, no md5sum
-            tlwarn("Downloaded $what, size equal, but no md5sum available;\n",
-                   "continuing, with fingers crossed.");
-            $gotfiledone = 1;
-          }
-        } else {
-          tlwarn("Partial download of $what found, removing it.\n");
-          unlink($tarfile, $xzfile);
-        }
-      } else {
-        # ok no size information, hopefully we have md5 sums
-        if ($whatmd5) {
-          if (tlmd5($xzfile) eq $whatmd5) {
-            $gotfiledone = 1;
-          } else {
-            tlwarn("Downloaded file, but md5sum differs, removing it.\n");
-          }
-        } else {
-          tlwarn("Container found, but cannot verify size of md5sum;\n",
-                 "continuing, with fingers crossed.\n");
-          $gotfiledone = 1;
-        }
-      }
-      debug("Reusing already downloaded container $xzfile\n")
-        if ($gotfiledone);
-    }
-    if (!$gotfiledone) {
-      if ($what =~ m,http://|ftp://,) {
-        # we are installing from the NET
-        # download the file and put it into temp
-        if (!download_file($what, $xzfile) || (! -r $xzfile)) {
-          tlwarn("Downloading $what did not succeed.\n");
-          return 0;
-        }
-      } else {
-        # we are installing from local compressed media
-        # copy it to temp
-        copy($what, $tempdir);
-      }
-    }
-    debug("un-xzing $xzfile to $tarfile\n");
-    system("$xzdec < $xzfile_quote > $tarfile_quote");
-    if (! -f $tarfile) {
-      tlwarn("Unpacking $xzfile did not succeed.\n");
-      return 0;
-    }
-    if (!TeXLive::TLUtils::untar($tarfile, $target, 1)) {
-      tlwarn("untarring $tarfile failed, stopping install.\n");
-      return 0;
-    }
-    # we remove the created .tlpobj it is recreated anyway in
-    # install_packages above in the right place. This way we also
-    # get rid of the $pkg.source.tlpobj which are useless
-    unlink ("$target/tlpkg/tlpobj/$pkg.tlpobj")
-      if (-r "$target/tlpkg/tlpobj/$pkg.tlpobj");
-    if ($what =~ m,http://|ftp://,) {
-      # we downloaded the original .tar.lzma from the net, so we keep it
-    } else {
-      # we are downloading it from local compressed media, so we can unlink it to save
-      # disk space
-      unlink($xzfile);
-    }
-  } else {
-    tlwarn("Sorry, no idea how to install $what\n");
-    return 0;
-  }
   return 1;
 }
 
@@ -1936,10 +1679,11 @@ sub parse_into_keywords {
   return($error, %ret);
 }
 
-=item C<announce_execute_actions($how, $tlpobj)>
+=item C<announce_execute_actions($how, $tlpobj, $what)>
 
 Announces that the actions given in C<$tlpobj> should be executed
-after all packages have been unpacked.
+after all packages have been unpacked. C<$what> provides 
+additional information.
 
 =cut
 
@@ -1956,12 +1700,10 @@ sub announce_execute_actions {
     $::files_changed = 1;
     return;
   }
-  if (defined($type) && ($type eq "latex-updated")) {
-    $::latex_updated = 1;
-    return;
-  }
-  if (defined($type) && ($type eq "tex-updated")) {
-    $::tex_updated = 1;
+  if (defined($type) && ($type eq "rebuild-format")) {
+    # rebuild-format must feed in a hashref of a parse_AddFormat_line data
+    # the $tlp argument is not used
+    $::execute_actions{'enable'}{'formats'}{$what->{'name'}} = $what; 
     return;
   }
   if (!defined($type) || (($type ne "enable") && ($type ne "disable"))) {
@@ -2206,102 +1948,133 @@ sub w32_remove_from_path {
 
 =pod
 
-=item C<unpack($what, $targetdir>
+=item C<check_file($what, $checksum, $checksize>
+
+Remove C<$what> if either the given C<$checksum> or C<$checksize> does
+not agree. If a check argument is not given, that check is not performed.
+
+=cut
+
+sub check_file {
+  my ($xzfile, $checksum, $checksize) = @_;
+  if ($checksum) {
+    my $tlchecksum = TeXLive::TLCrypto::tlchecksum($xzfile);
+    if ($tlchecksum ne $checksum) {
+      tlwarn("TLUtils::check_file: removing $xzfile, checksums differ:\n");
+      tlwarn("TLUtils::check_file:   TL=$tlchecksum, arg=$checksum\n");
+      unlink($xzfile);
+      return;
+    }
+  }
+  if ($checksize) {
+    my $filesize = (stat $xzfile)[7];
+    if ($filesize != $checksize) {
+      tlwarn("TLUtils::check_file: removing $xzfile, sizes differ:\n");
+      tlwarn("TLUtils::check_file:   TL=$filesize, arg=$checksize\n");
+      unlink($xzfile);
+      return;
+    }
+  } 
+  # We cannot remove the file here, otherwise restoring of backups
+  # or unwind packages might die.
+}
+
+=pod
+
+=item C<unpack($what, $targetdir, @opts>
 
 If necessary, downloads C$what>, and then unpacks it into C<$targetdir>.
-Returns the name of the unpacked package (determined from the name of C<$what>)
-in case of success, otherwise undefined.
+C<@opts> is assigned to a hash and can contain the following 
+options: C<tmpdir> (use this directory for downloaded files), 
+C<checksum> (check downloaded file against this checksum), 
+C<size> (check downloaded file against this size),
+C<remove> (remove temporary files after operation).
+Returns a pair of values: in case of error return 0 and an additional
+explanation, in case of success return 1 and the name of the package.
 
 =cut
 
 sub unpack {
-  my ($what, $target) = @_;
+  my ($what, $target, %opts) = @_;
+  # remove by default
+  my $remove = (defined($opts{'remove'}) ? $opts{'remove'} : 1);
+  my $tempdir = (defined($opts{'tmpdir'}) ? $opts{'tmpdir'} : tl_tmpdir());
+  my $checksum = (defined($opts{'checksum'}) ? $opts{'checksum'} : 0);
+  my $size = (defined($opts{'size'}) ? $opts{'size'} : 0);
 
   if (!defined($what)) {
-    tlwarn("TLUtils::unpack: nothing to unpack!\n");
-    return;
+    return (0, "nothing to unpack");
   }
 
   # we assume that $::progs has been set up!
   my $wget = $::progs{'wget'};
   my $xzdec = TeXLive::TLUtils::quotify_path_with_spaces($::progs{'xzdec'});
   if (!defined($wget) || !defined($xzdec)) {
-    tlwarn("_install_package: programs not set up properly, strange.\n");
-    return;
+    return (0, "programs not set up properly");
   }
 
   my $type;
-  if ($what =~ m,\.tar(\.xz)?$,) {
-    $type = defined($what) ? "xz" : "tar";
-  } else {
-    tlwarn("TLUtils::unpack: don't know how to unpack this: $what\n");
-    return;
+  if ($what !~ m/\.tar\.xz$/) {
+    return(0, "don't know how to unpack");
   }
 
-  my $tempdir = tl_tmpdir();
-
-  # we are still here, so something was handed in and we have either .tar or .tar.xz
   my $fn = basename($what);
   my $pkg = $fn;
-  $pkg =~ s/\.tar(\.xz)?$//;
+  $pkg =~ s/\.tar\.xz$//;
   my $tarfile;
-  my $remove_tarfile = 1;
-  if ($type eq "xz") {
-    my $xzfile = "$tempdir/$fn";
-    $tarfile  = "$tempdir/$fn"; $tarfile =~ s/\.xz$//;
-    my $xzfile_quote = $xzfile;
-    my $tarfile_quote = $tarfile;
-    my $target_quote = $target;
-    if (win32()) {
-      $xzfile =~ s!/!\\!g;
-      $tarfile =~ s!/!\\!g;
-      $target =~ s!/!\\!g;
-    }
-    $xzfile_quote = "\"$xzfile\"";
-    $tarfile_quote = "\"$tarfile\"";
-    $target_quote = "\"$target\"";
-    if ($what =~ m,http://|ftp://,) {
-      # we are installing from the NET
-      # download the file and put it into temp
-      if (!download_file($what, $xzfile) || (! -r $xzfile)) {
-        tlwarn("Downloading \n");
-        tlwarn("   $what\n");
-        tlwarn("did not succeed, please retry.\n");
-        unlink($tarfile, $xzfile);
-        return;
-      }
-    } else {
-      # we are installing from local compressed files
-      # copy it to temp
-      TeXLive::TLUtils::copy($what, $tempdir);
-    }
-    debug("un-xzing $xzfile to $tarfile\n");
-    system("$xzdec < $xzfile_quote > $tarfile_quote");
-    if (! -f $tarfile) {
-      tlwarn("TLUtils::unpack: Unpacking $xzfile failed, please retry.\n");
-      unlink($tarfile, $xzfile);
-      return;
-    }
-    unlink($xzfile);
-  } else {
-    $tarfile = "$tempdir/$fn";
-    if ($what =~ m,http://|ftp://,) {
-      if (!download_file($what, $tarfile) || (! -r $tarfile)) {
-        tlwarn("Downloading \n");
-        tlwarn("   $what\n");
-        tlwarn("failed, please retry.\n");
-        unlink($tarfile);
-        return;
-      }
-    } else {
-      $tarfile = $what;
-      $remove_tarfile = 0;
-    }
+  my $remove_xzfile = $remove;
+  my $xzfile = "$tempdir/$fn";
+  $tarfile  = "$tempdir/$fn"; $tarfile =~ s/\.xz$//;
+  my $xzfile_quote;
+  my $tarfile_quote;
+  my $target_quote;
+  if (win32()) {
+    $xzfile =~ s!/!\\!g;
+    $tarfile =~ s!/!\\!g;
+    $target =~ s!/!\\!g;
   }
-  if (untar($tarfile, $target, $remove_tarfile)) {
-    return "$pkg";
+  $xzfile_quote = "\"$xzfile\"";
+  $tarfile_quote = "\"$tarfile\"";
+  $target_quote = "\"$target\"";
+  if ($what =~ m,^(http|ftp)://,) {
+    # we are installing from the NET
+    # check for the presence of $what in $tempdir
+    if (-r $xzfile) {
+      check_file($xzfile, $checksum, $size);
+    }
+    # if the file is now not present, we can use it
+    if (! -r $xzfile) {
+      # try download the file and put it into temp
+      download_file($what, $xzfile);
+      # remove false downloads
+      check_file($xzfile, $checksum, $size);
+      if ( ! -r $xzfile ) {
+        return(0, "downloading did not succeed");
+      }
+    }
   } else {
-    return;
+    # we are installing from local compressed files
+    # copy it to temp
+    TeXLive::TLUtils::copy($what, $tempdir);
+
+    check_file($xzfile, $checksum, $size);
+    if (! -r $xzfile) {
+      return (0, "consistency checks failed");
+    }
+    # we can remove it afterwards
+    $remove_xzfile = 1;
+  }
+  debug("un-xzing $xzfile to $tarfile\n");
+  system("$xzdec < $xzfile_quote > $tarfile_quote");
+  if (! -f $tarfile) {
+    unlink($tarfile, $xzfile);
+    return(0, "Unpacking $xzfile failed");
+  }
+  unlink($xzfile) if $remove_xzfile;
+  if (untar($tarfile, $target, 1)) {
+    return (1, "$pkg");
+  } else {
+    return (0, "untar failed");
   }
 }
 
@@ -2417,7 +2190,7 @@ sub setup_programs {
   $::progs{'xz'} = "xz";
   $::progs{'tar'} = "tar";
 
-  if ($^O =~ /^MSWin(32|64)$/i) {
+  if ($^O =~ /^MSWin/i) {
     $::progs{'wget'}    = conv_to_w32_path("$bindir/wget/wget.exe");
     $::progs{'tar'}     = conv_to_w32_path("$bindir/tar.exe");
     $::progs{'xzdec'} = conv_to_w32_path("$bindir/xz/xzdec.exe");
@@ -2470,12 +2243,14 @@ sub setup_programs {
 # Return 0 if failure, 1 if success.
 #
 sub setup_unix_one {
-  my ($p, $def, $arg) = @_;
+  my ($p, $def, $arg, $donotwarn) = @_;
   our $tmp;
   my $test_fallback = 0;
+  ddebug("trying to set up $p, default $def, arg $arg\n");
   if (-r $def) {
     my $ready = 0;
     if (-x $def) {
+      ddebug("default $def is readable and executable!\n");
       # checking only for the executable bit is not enough, we have
       # to check for actualy "executability" since a "noexec" mount
       # option may interfere, which is not taken into account by
@@ -2544,9 +2319,13 @@ sub setup_unix_one {
       if ($ret == 0) {
         debug("Using system $p (tested).\n");
       } else {
-        tlwarn("$0: Initialization failed (in setup_unix_one):\n");
-        tlwarn("$0: could not find a usable $p.\n");
-        tlwarn("$0: Please install $p and try again.\n");
+        if ($donotwarn) {
+          debug("$0: initialization of $p failed but ignored!\n");
+        } else {
+          tlwarn("$0: Initialization failed (in setup_unix_one):\n");
+          tlwarn("$0: could not find a usable $p.\n");
+          tlwarn("$0: Please install $p and try again.\n");
+        }
         return 0;
       }
     } else {
@@ -2949,6 +2728,7 @@ sub _create_config_files {
       $tlpdblinesref, @postlines) = @_;
   my $root = $tlpdb->root;
   my @lines = ();
+  my $usermode = $tlpdb->setting( "usertree" );
   if (-r "$root/$headfile") {
     # we might be in user mode and do *not* want that the generation
     # of the configuration file just boils out.
@@ -2957,8 +2737,7 @@ sub _create_config_files {
     @lines = <INFILE>;
     close (INFILE);
   } else {
-    tlwarn("TLUtils::_create_config_files: $root/$headfile: "
-           . " head file not found, ok in user mode");
+    die ("Giving up.") if (!$usermode);
   }
   push @lines, @$tlpdblinesref;
   if (defined($localconf) && -r $localconf) {
@@ -2974,17 +2753,19 @@ sub _create_config_files {
   if (@postlines) {
     push @lines, @postlines;
   }
-  if ($#lines >= 0) {
-    open(OUTFILE,">$dest")
-      or die("Cannot open $dest for writing: $!");
-
-    if (!$keepfirstline) {
-      print OUTFILE $cc;
-      printf OUTFILE " Generated by %s on %s\n", "$0", scalar localtime;
-    }
-    print OUTFILE @lines;
-    close(OUTFILE) || warn "close(>$dest) failed: $!";
+  if ($usermode && -e $dest) {
+    tlwarn("Updating $dest, backup copy in $dest.backup\n");
+    File::Copy::copy($dest, "$dest.backup");
   }
+  open(OUTFILE,">$dest")
+    or die("Cannot open $dest for writing: $!");
+
+  if (!$keepfirstline) {
+    print OUTFILE $cc;
+    printf OUTFILE " Generated by %s on %s\n", "$0", scalar localtime;
+  }
+  print OUTFILE @lines;
+  close(OUTFILE) || warn "close(>$dest) failed: $!";
 }
 
 sub parse_AddHyphen_line {
@@ -3062,7 +2843,11 @@ sub parse_AddHyphen_line {
   return %ret;
 }
 
-
+# 
+# return hash of items on AddFormat line LINE (which must not have the
+# leading "execute AddFormat").  If parse fails, hash will contain a key
+# "error" with a message.
+# 
 sub parse_AddFormat_line {
   my $line = shift;
   my %ret;
@@ -3071,7 +2856,7 @@ sub parse_AddFormat_line {
   $ret{"mode"} = 1;
   for my $p (quotewords('\s+', 0, "$line")) {
     my ($a, $b);
-    if ($p =~ m/^(name|engine|mode|patterns|options)=(.*)$/) {
+    if ($p =~ m/^(name|engine|mode|patterns|options|fmttriggers)=(.*)$/) {
       $a = $1;
       $b = $2;
     } else {
@@ -3104,6 +2889,11 @@ sub parse_AddFormat_line {
     }
     if ($a eq "options") {
       $ret{"options"} = ( $b ? $b : "" );
+      next;
+    }
+    if ($a eq "fmttriggers") {
+      my @tl = split(',',$b);
+      $ret{"fmttriggers"} = \@tl ;
       next;
     }
     # should not be reached at all
@@ -3206,13 +2996,16 @@ directory (Unix) or the root of a drive (Windows).
 sub texdir_check {
   my $texdir = shift;
   return 0 unless defined $texdir;
-  # convert to absolute/canonical, for safer parsing
-  # tl_abs_path should work as long as grandparent exists
+  # convert to absolute, for safer parsing.
+  # The return value may still contain symlinks,
+  # but no unnecessary terminating '/'.
   $texdir = tl_abs_path($texdir);
   return 0 unless defined $texdir;
-  # also reject the root of a drive/volume,
+  # also reject the root of a drive,
   # assuming that only the canonical form of the root ends with /
   return 0 if $texdir =~ m!/$!;
+  # win32: for now, reject the root of a samba share
+  return 0 if win32() && $texdir =~ m!^//[^/]+/[^/]+$!;
   my $texdirparent;
   my $texdirpparent;
 
@@ -3345,11 +3138,12 @@ sub dddebug {
   }
 }
 
-
 =item C<log ($str1, $str2, ...)>
 
 Write a message to the log file (and nowhere else), the concatenation of
-the argument strings.
+the argument strings.  The log file may not ever be defined (e.g., the
+C<-logfile> option isn't given), in which case the message will never be
+written anywhere.
 
 =cut
 
@@ -3359,7 +3153,6 @@ sub log {
   _logit('file', -100, @_);
   $::opt_quiet = $savequiet;
 }
-
 
 =item C<tlwarn ($str1, $str2, ...)>
 
@@ -3389,7 +3182,11 @@ Uses C<tlwarn> to issue a warning, then exits with exit code 1.
 
 sub tldie {
   tlwarn(@_);
-  exit(1);
+  if ($::gui_mode) {
+    Tk::exit(1);
+  } else {
+    exit(1);
+  }
 }
 
 =item C<debug_hash ($label, hash))>
@@ -3493,7 +3290,7 @@ sub process_logging_options {
 
 This function takes a single argument I<path> and returns it with
 C<"> chars surrounding it on Unix.  On Windows, the C<"> chars are only
-added if I<path> a few special characters, since unconditional quoting
+added if I<path> contains special characters, since unconditional quoting
 leads to errors there.  In all cases, any C<"> chars in I<path> itself
 are (erroneously) eradicated.
  
@@ -3786,21 +3583,56 @@ sub extract_mirror_entry {
   return $foo[$#foo] . "/" . $TeXLive::TLConfig::TeXLiveServerPath;
 }
 
-sub tlmd5 {
-  my ($file) = @_;
-  if (-r $file) {
-    open(FILE, $file) || die "open($file) failed: $!";
-    binmode(FILE);
-    my $md5hash = Digest::MD5->new->addfile(*FILE)->hexdigest;
-    close(FILE);
-    return $md5hash;
-  } else {
-    tlwarn("tlmd5, given file not readable: $file\n");
-    return "";
-  }
+=pod
+
+=item C<< slurp_file($file) >>
+
+Reads the whole file and returns the content in a scalar.
+
+=cut
+
+sub slurp_file {
+  my $file = shift;
+  my $file_data = do {
+    local $/ = undef;
+    open my $fh, "<", $file || die "open($file) failed: $!";
+    <$fh>;
+  };
+  return($file_data);
 }
 
-#
+=pod
+
+=item C<< download_to_temp_or_file($url) >>
+
+If C<$url> tries to download the file into a temporary file.
+In both cases returns the local file.
+
+Returns the local file name if succeeded, otherwise undef.
+
+=cut
+
+sub download_to_temp_or_file {
+  my $url = shift;
+  my ($url_fh, $url_file);
+  if ($url =~ m,^(http|ftp|file)://,) {
+    ($url_fh, $url_file) = File::Temp::tempfile(UNLINK => 1);
+    # now $url_fh filehandle is open, the file created
+    # TLUtils::download_file will just overwrite what is there
+    # on windows that doesn't work, so we close the fh immediately
+    # this creates a short loophole, but much better than before anyway
+    close($url_fh);
+    $ret = download_file($url, $url_file);
+  } else {
+    $url_file = $url;
+    $ret = 1;
+  }
+  if ($ret && (-r "$url_file")) {
+    return $url_file;
+  }
+  return;
+}
+
 # compare_tlpobjs 
 # returns a hash
 #   $ret{'revision'} = "leftRev:rightRev"     if revision differ
@@ -4130,10 +3962,9 @@ __END__
 
 =head1 SEE ALSO
 
-The modules L<TeXLive::TLPSRC>, L<TeXLive::TLPOBJ>,
-L<TeXLive::TLPDB>, L<TeXLive::TLTREE>, and the
-document L<Perl-API.txt> and the specification in the TeX Live
-repository trunk/Master/tlpkg/doc/.
+The modules L<TeXLive::TLConfig>, L<TeXLive::TLCrypto>,
+L<TeXLive::TLDownload>, L<TeXLive::TLWinGoo>, etc., and the
+documentation in the repository: C<Master/tlpkg/doc/>.
 
 =head1 AUTHORS AND COPYRIGHT
 

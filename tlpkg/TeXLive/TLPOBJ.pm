@@ -1,30 +1,25 @@
-# $Id: TLPOBJ.pm 35751 2014-12-05 18:45:04Z karl $
+# $Id: TLPOBJ.pm 40666 2016-04-21 22:29:20Z karl $
 # TeXLive::TLPOBJ.pm - module for using tlpobj files
-# Copyright 2007-2014 Norbert Preining
+# Copyright 2007-2016 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLPOBJ;
 
+my $svnrev = '$Revision: 40666 $';
+my $_modulerevision = ($svnrev =~ m/: ([0-9]+) /) ? $1 : "unknown";
+sub module_revision { return $_modulerevision; }
+
 use TeXLive::TLConfig qw($DefaultCategory $CategoriesRegexp 
                          $MetaCategoriesRegexp $InfraLocation 
                          $RelocPrefix $RelocTree);
-use TeXLive::TLUtils;
+use TeXLive::TLCrypto;
 use TeXLive::TLTREE;
+use TeXLive::TLUtils;
 
 our $_tmp;
 my $_containerdir;
 
-my $svnrev = '$Revision: 35751 $';
-my $_modulerevision;
-if ($svnrev =~ m/: ([0-9]+) /) {
-  $_modulerevision = $1;
-} else {
-  $_modulerevision = "unknown";
-}
-sub module_revision {
-  return $_modulerevision;
-}
 
 sub new {
   my $class = shift;
@@ -163,11 +158,16 @@ sub from_fh {
       }
     } elsif ($cmd eq 'containersize' || $cmd eq 'srccontainersize'
         || $cmd eq 'doccontainersize') {
-      $arg =~ /^[0-9]+$/ or die "Illegal size value: $line!";
+      $arg =~ /^[0-9]+$/ or die "Invalid size value: $line!";
       $self->{$cmd} = $arg;
     } elsif ($cmd eq 'containermd5' || $cmd eq 'srccontainermd5'
         || $cmd eq 'doccontainermd5') {
-      $arg =~ /^[a-f0-9]+$/ or die "Illegal md5 value: $line!";
+      $arg =~ /^[a-f0-9]{32}$/ or die "Invalid md5 value: $line!";
+      $self->{$cmd} = $arg;
+    } elsif ($cmd eq 'containerchecksum' || $cmd eq 'srccontainerchecksum'
+        || $cmd eq 'doccontainerchecksum') {
+      $arg =~ /^[a-f0-9]{$TeXLive::TLConfig::ChecksumLength}$/
+        or die "Invalid checksum value: $line!";
       $self->{$cmd} = $arg;
     } elsif ($cmd eq 'name') {
       $arg =~ /^([-.\w]+)$/ or die("Invalid name: $line!");
@@ -202,7 +202,7 @@ sub from_fh {
         $self->{'binsize'}{$arch} = $size;
       }
     } elsif ($cmd eq 'relocated') {
-      ($arg eq '0' || $arg eq '1') or die "Illegal value: $line!";
+      ($arg eq '0' || $arg eq '1') or die "Invalid value: $line!";
       $self->{'relocated'} = $arg;
     } elsif ($cmd eq 'catalogue') {
       $self->{'catalogue'} = $arg;
@@ -308,11 +308,17 @@ sub writeout {
   if (defined($self->{'containermd5'})) {
     print $fd "containermd5 $self->{'containermd5'}\n";
   }
+  if (defined($self->{'containerchecksum'})) {
+    print $fd "containerchecksum $self->{'containerchecksum'}\n";
+  }
   if (defined($self->{'doccontainersize'})) {
     print $fd "doccontainersize $self->{'doccontainersize'}\n";
   }
   if (defined($self->{'doccontainermd5'})) {
     print $fd "doccontainermd5 $self->{'doccontainermd5'}\n";
+  }
+  if (defined($self->{'doccontainerchecksum'})) {
+    print $fd "doccontainerchecksum $self->{'doccontainerchecksum'}\n";
   }
   if (defined($self->{'docfiles'}) && (@{$self->{'docfiles'}})) {
     print $fd "docfiles size=$self->{'docsize'}\n";
@@ -336,6 +342,9 @@ sub writeout {
   }
   if (defined($self->{'srccontainermd5'})) {
     print $fd "srccontainermd5 $self->{'srccontainermd5'}\n";
+  }
+  if (defined($self->{'srccontainerchecksum'})) {
+    print $fd "srccontainerchecksum $self->{'srccontainerchecksum'}\n";
   }
   if (defined($self->{'srcfiles'}) && (@{$self->{'srcfiles'}})) {
     print $fd "srcfiles size=$self->{'srcsize'}\n";
@@ -674,7 +683,7 @@ sub make_container {
     return (0, 0, "");
   }
   my $size = (stat "$destdir/$containername") [7];
-  my $md5 = TeXLive::TLUtils::tlmd5("$destdir/$containername");
+  my $checksum = TeXLive::TLCrypto::tlchecksum("$destdir/$containername");
   
   # cleaning up
   unlink("$tlpobjdir/$self->{'name'}.tlpobj");
@@ -683,8 +692,8 @@ sub make_container {
   rmdir($InfraLocation) if $removetlpkgdir;
   xchdir($cwd);
 
-  debug(" done $containername, size $size, $md5\n");
-  return ($size, $md5, "$destdir/$containername");
+  debug(" done $containername, size $size, $checksum\n");
+  return ($size, $checksum, "$destdir/$containername");
 }
 
 
@@ -743,7 +752,7 @@ sub update_from_catalogue {
       $foo =~ s/^.Date: //;
       # trying to extract the interesting part of a subversion date
       # keyword expansion here, e.g.,
-      # $Date: 2014-12-05 19:45:04 +0100 (Fri, 05 Dec 2014) $
+      # $Date: 2016-04-22 00:29:20 +0200 (Fri, 22 Apr 2016) $
       # ->2007-08-15 19:43:35 +0100
       $foo =~ s/ \(.*\)( *\$ *)$//;  # maybe nothing after parens
       $self->cataloguedata->{'date'} = $foo;
@@ -756,6 +765,17 @@ sub update_from_catalogue {
     }
     if (defined($entry->ctan) && $entry->ctan ne "") {
       $self->cataloguedata->{'ctan'} = $entry->ctan;
+    }
+    # TODO TODO TODO
+    # we should rewrite the also fields to TeX Live package names ...
+    # for now these are CTAN package names!
+    # warning, we expect that cataloguedata entries are strings, 
+    # so stringify these lists
+    if (@{$entry->also}) {
+      $self->cataloguedata->{'also'} = "@{$entry->also}";
+    }
+    if (@{$entry->topics}) {
+      $self->cataloguedata->{'topics'} = "@{$entry->topics}";
     }
     #if (defined($entry->texlive)) {
     # $self->cataloguedata->{'texlive'} = $entry->texlive;
@@ -1185,6 +1205,21 @@ sub doccontainermd5 {
   if (@_) { $self->{'doccontainermd5'} = shift }
   return ( defined($self->{'doccontainermd5'}) ? $self->{'doccontainermd5'} : "" );
 }
+sub containerchecksum {
+  my $self = shift;
+  if (@_) { $self->{'containerchecksum'} = shift }
+  return ( defined($self->{'containerchecksum'}) ? $self->{'containerchecksum'} : "" );
+}
+sub srccontainerchecksum {
+  my $self = shift;
+  if (@_) { $self->{'srccontainerchecksum'} = shift }
+  return ( defined($self->{'srccontainerchecksum'}) ? $self->{'srccontainerchecksum'} : "" );
+}
+sub doccontainerchecksum {
+  my $self = shift;
+  if (@_) { $self->{'doccontainerchecksum'} = shift }
+  return ( defined($self->{'doccontainerchecksum'}) ? $self->{'doccontainerchecksum'} : "" );
+}
 sub srcsize {
   my $self = shift;
   if (@_) { $self->{'srcsize'} = shift }
@@ -1466,13 +1501,13 @@ there are 6 more possible keys:
   $tlpobj->containersize
   $tlpobj->doccontainersize
   $tlpobj->srccontainersize
-  $tlpobj->containermd5
-  $tlpobj->doccontainermd5
-  $tlpobj->srccontainermd5
+  $tlpobj->containerchecksum
+  $tlpobj->doccontainerchecksum
+  $tlpobj->srccontainerchecksum
 
-describing the respective sizes and md5sums in bytes and as hex string, resp.
-The latter two are only present
-if src/doc file container splitting is activated for that install medium.
+describing the respective sizes and checksums in bytes and as hex string, resp.
+The latter two are only present if src/doc file container splitting is
+activated for that install medium.
 
 =head1 OTHER FUNCTIONS
 
@@ -1551,7 +1586,7 @@ is placed into the root of the installation.
 This is used to distribute packages which can be installed in any arbitrary
 texmf tree (of other distributions, too).
 
-Return values are the size, the md5sum, and the full name of the container.
+Return values are the size, the checksum, and the full name of the container.
 
 =item C<recompute_sizes($tltree)>
 
@@ -1675,8 +1710,10 @@ lines for language.dat.lua that can be generated from the tlpobj.
 
 =head1 SEE ALSO
 
-The modules L<TeXLive::TLConfig>, L<TeXLive::TLUtils>, L<TeXLive::TLPSRC>,
-L<TeXLive::TLPDB>, L<TeXLive::TLTREE>, L<TeXLive::TeXCatalogue>.
+The modules L<TeXLive::TLConfig>, L<TeXLive::TLCrypto>,
+L<TeXLive::TLUtils>, L<TeXLive::TLPSRC>, L<TeXLive::TLPDB>,
+L<TeXLive::TLTREE>, L<TeXLive::TeXCatalogue>, etc., and the
+documentation in the repository: C<Master/tlpkg/doc/>.
 
 =head1 AUTHORS AND COPYRIGHT
 
