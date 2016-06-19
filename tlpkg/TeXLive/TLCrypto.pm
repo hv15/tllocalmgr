@@ -1,4 +1,4 @@
-# $Id: TLCrypto.pm 40899 2016-05-05 02:15:24Z preining $
+# $Id: TLCrypto.pm 41249 2016-05-19 00:39:40Z preining $
 # TeXLive::TLcrypto.pm - handle checksums and signatures.
 # Copyright 2016 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
@@ -9,7 +9,7 @@ package TeXLive::TLCrypto;
 use Digest::MD5;
 
 use TeXLive::TLConfig;
-use TeXLive::TLUtils qw(debug ddebug win32 which platform conv_to_w32_path tlwarn);
+use TeXLive::TLUtils qw(debug ddebug win32 which platform conv_to_w32_path tlwarn tldie);
 
 
 my $svnrev = '$Revision: 40650 $';
@@ -61,13 +61,24 @@ BEGIN {
 
 =item C<< setup_checksum_method() >>
 
-Tries to find a checksum method: First check for usability of C<<Digest::SHA>>,
-then for either the C<openssl> or the C<sha512sum> programs.
-Returns the checksum method or undef if none found.
+Tries to find a checksum method: check usability of C<Digest::SHA>,
+then the programs C<openssl>, C<sha512sum>, and C<shasum>, in that
+order.  On old-enough Macs, C<openssl> is present but does not have
+the option C<-sha512>, while the separate program C<shasum> does suffice.
+
+Returns the checksum method as a string, and also sets
+C<<$::checksum_method>>, or false if none found.
 
 =cut
 
 sub setup_checksum_method {
+  # make it a noop if already defined
+  # the checksum method could also be "" meaning that there
+  # is none. We do not need to check again. Thus we check
+  # on defined.
+  return ($::checksum_method) if defined($::checksum_method);
+  # default is no checksum
+  $::checksum_method = "";
   # for debugging
   # $::checksum_method = "sha512sum";
   # return($::checksum_method);
@@ -120,9 +131,12 @@ Return checksum of C<$file>.
 
 sub tlchecksum {
   my ($file) = @_;
+  # this is here for the case that a script forgets to
+  # set up the checksum method!
   if (!$::checksum_method) {
     setup_checksum_method();
   }
+  tldie("no checksum method available\n") if (!$::checksum_method);
   if (-r $file) {
     my ($out, $ret);
     if ($::checksum_method eq "openssl") {
@@ -427,7 +441,7 @@ sub gpg_verify_signature {
   }
   $file_quote = TeXLive::TLUtils::quotify_path_with_spaces ($file);
   $sig_quote = TeXLive::TLUtils::quotify_path_with_spaces ($sig);
-  my ($status_fh, $status_file) = File::Temp::tempfile(UNLINK => 1);
+  my ($status_fh, $status_file) = TeXLive::TLUtils::tl_tmpfile();
   close($status_fh);
   my ($out, $ret)
     = TeXLive::TLUtils::run_cmd("$::gpg --status-file \"$status_file\" --verify $sig_quote $file_quote 2>&1");

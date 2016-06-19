@@ -1,4 +1,4 @@
-# $Id: TLPOBJ.pm 40666 2016-04-21 22:29:20Z karl $
+# $Id: TLPOBJ.pm 41250 2016-05-19 00:39:50Z preining $
 # TeXLive::TLPOBJ.pm - module for using tlpobj files
 # Copyright 2007-2016 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
@@ -6,7 +6,7 @@
 
 package TeXLive::TLPOBJ;
 
-my $svnrev = '$Revision: 40666 $';
+my $svnrev = '$Revision: 41250 $';
 my $_modulerevision = ($svnrev =~ m/: ([0-9]+) /) ? $1 : "unknown";
 sub module_revision { return $_modulerevision; }
 
@@ -534,7 +534,7 @@ sub make_container {
   # load Cwd only if necessary ...
   require Cwd;
   my $cwd = &Cwd::getcwd;
-  if ("$destdir" !~ m@^(.:)?/@) {
+  if ("$destdir" !~ m@^(.:)?[/\\]@) {
     # we have an relative containerdir, so we have to make it absolute
     $destdir = "$cwd/$destdir";
   }
@@ -602,8 +602,9 @@ sub make_container {
   # overflow standard tar format and result in special things being
   # done.  We don't want the GNU-specific special things.
   #
+  my $is_user_container = ( $containername =~ /\.r[0-9]/ );
   my @attrs
-    = $containername =~ /\.r[0-9]/
+    = $is_user_container
       ? ()
       : ( "--owner", "0",  "--group", "0",  "--exclude", ".svn",
           "--format", "ustar" );
@@ -625,7 +626,7 @@ sub make_container {
   my $tartempfile = "";
   if (win32()) {
     # Since we provide our own (GNU) tar on Windows, we know it has -T.
-    my $tmpdir = TeXLive::TLUtils::get_system_tmpdir();
+    my $tmpdir = TeXLive::TLUtils::tl_tmpdir();
     $tartempfile = "$tmpdir/mc$$";
     open(TMP, ">$tartempfile") || die "open(>$tartempfile) failed: $!";
     print TMP map { "$_\n" } @files_to_backup;
@@ -683,7 +684,13 @@ sub make_container {
     return (0, 0, "");
   }
   my $size = (stat "$destdir/$containername") [7];
-  my $checksum = TeXLive::TLCrypto::tlchecksum("$destdir/$containername");
+  #
+  # if we are creating a system container, or there is a way to
+  # compute the checksums, do it
+  my $checksum = "";
+  if (!$is_user_container || $::checksum_method) {
+    $checksum = TeXLive::TLCrypto::tlchecksum("$destdir/$containername");
+  }
   
   # cleaning up
   unlink("$tlpobjdir/$self->{'name'}.tlpobj");
@@ -752,7 +759,7 @@ sub update_from_catalogue {
       $foo =~ s/^.Date: //;
       # trying to extract the interesting part of a subversion date
       # keyword expansion here, e.g.,
-      # $Date: 2016-04-22 00:29:20 +0200 (Fri, 22 Apr 2016) $
+      # $Date: 2016-05-19 02:39:50 +0200 (Thu, 19 May 2016) $
       # ->2007-08-15 19:43:35 +0100
       $foo =~ s/ \(.*\)( *\$ *)$//;  # maybe nothing after parens
       $self->cataloguedata->{'date'} = $foo;

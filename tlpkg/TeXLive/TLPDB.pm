@@ -1,4 +1,4 @@
-# $Id: TLPDB.pm 40898 2016-05-05 02:15:12Z preining $
+# $Id: TLPDB.pm 41180 2016-05-16 02:49:27Z preining $
 # TeXLive::TLPDB.pm - module for using tlpdb files
 # Copyright 2007-2016 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
@@ -6,7 +6,7 @@
 
 package TeXLive::TLPDB;
 
-my $svnrev = '$Revision: 40898 $';
+my $svnrev = '$Revision: 41180 $';
 my $_modulerevision = ($svnrev =~ m/: ([0-9]+) /) ? $1 : "unknown";
 sub module_revision { return $_modulerevision; }
 
@@ -97,8 +97,6 @@ use TeXLive::TLUtils qw(dirname mkdirhier member win32 info log debug ddebug
                         tlwarn basename download_file merge_into tldie);
 use TeXLive::TLWinGoo;
 
-use File::Temp qw/tempfile/;
-
 use Cwd 'abs_path';
 
 my $_listdir;
@@ -132,7 +130,7 @@ sub new {
     verified => 0
   };
   my $verify = defined($params{'verify'}) ? $params{'verify'} : 0;
-  ddebug("TLPDB new: verify = $verify\n");
+  ddebug("TLPDB new: verify=$verify\n");
   $_listdir = $params{'listdir'} if defined($params{'listdir'});
   bless $self, $class;
   if (defined($params{'tlpdbfile'})) {
@@ -307,7 +305,7 @@ sub from_file {
     # on windows that doesn't work, so we close the fh immediately
     # this creates a short loophole, but much better than before anyway
     my $tlpdbfh;
-    ($tlpdbfh, $tlpdbfile) = tempfile();
+    ($tlpdbfh, $tlpdbfile) = TeXLive::TLUtils::tl_tmpfile();
     # same as above
     close($tlpdbfh);
     my $tlpdbfile_quote = $tlpdbfile;
@@ -319,7 +317,7 @@ sub from_file {
     my $xz_succeeded = 0 ;
     if (defined($::progs{'xzdec'})) {
       # we first try the xz compressed file
-      my ($xzfh, $xzfile) = tempfile();
+      my ($xzfh, $xzfile) = TeXLive::TLUtils::tl_tmpfile();
       close($xzfh);
       my $xzfile_quote = $xzfile;
       if (win32()) {
@@ -372,7 +370,7 @@ sub from_file {
       } elsif ($r == 2) {
         tldie("$0: signature verification error of $tlpdbfile from $path: $m\n");
       } elsif ($r == -1) {
-        tldie("$0: connection problems, cannot download: $m\n");
+        tldie("$0: cannot download: $m\n");
       } elsif ($r == -2) {
         debug("$0: remote database checksum is not signed, continuing anyway!\n");
         $self->verification_status("not signed");
@@ -398,7 +396,7 @@ sub from_file {
       } elsif ($r == 2) {
         tldie("$0: signature verification error of $path from $path: $m\n");
       } elsif ($r == -1) {
-        tldie("$0: connection problems, cannot download: $m\n");
+        tldie("$0: cannot download: $m\n");
       } elsif ($r == -2) {
         debug("$0: remote database checksum is not signed, continuing anyway!\n");
         $self->verification_status("not signed");
@@ -434,10 +432,7 @@ sub from_file {
 
   $self->{'verified'} = $is_verified;
 
-  # remove the xzdec-ed tlpdb file from temp dir
-  # THAT IS RACY!!! we should fix that in some better way with tempfile
   close($retfh);
-  unlink($tlpdbfile) if $tlpdbfile;
   return($found);
 }
 
@@ -1755,7 +1750,7 @@ sub _install_data {
   my ($self, $what, $reloc, $filelistref, $totlpdb, $whatsize, $whatcheck) = @_;
 
   my $target = $totlpdb->root;
-  my $tempdir = "$target/temp";
+  my $tempdir = TeXLive::TLUtils::tl_tmpdir();
 
   my @filelist = @$filelistref;
 
@@ -1800,7 +1795,7 @@ sub _install_data {
         $target .= "/$TeXLive::TLConfig::RelocTree";
       }
     }
-    my ($ret, $pkg) = TeXLive::TLUtils::unpack($what, $target, 'size' => $whatsize, 'checksum' => $whatcheck);
+    my ($ret, $pkg) = TeXLive::TLUtils::unpack($what, $target, 'size' => $whatsize, 'checksum' => $whatcheck, 'tmpdir' => $tempdir);
     if (!$ret) {
       tlwarn("TLPDB::_install_package: $pkg\n");
       return(0);

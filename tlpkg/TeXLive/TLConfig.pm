@@ -1,4 +1,4 @@
-# $Id: TLConfig.pm 40652 2016-04-21 19:08:52Z karl $
+# $Id: TLConfig.pm 41437 2016-06-13 17:52:03Z karl $
 # TeXLive::TLConfig.pm - module exporting configuration values
 # Copyright 2007-2016 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
@@ -6,7 +6,7 @@
 
 package TeXLive::TLConfig;
 
-my $svnrev = '$Revision: 40652 $';
+my $svnrev = '$Revision: 41437 $';
 my $_modulerevision = ($svnrev =~ m/: ([0-9]+) /) ? $1 : "unknown";
 sub module_revision { return $_modulerevision; }
 
@@ -58,9 +58,6 @@ $ReleaseYear = 2016;
 # same as the release year, or any number of releases earlier.
 # Generally not tested.
 $MinRelease = 2016;
-
-# users can NOT upgrade due to internal changes, force a full installation
-#$MinRelease = $ReleaseYear;
 
 # Meta Categories do not ship files, but only call for other packages.
 our @MetaCategories = qw/Collection Scheme/;
