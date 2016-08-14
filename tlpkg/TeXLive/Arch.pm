@@ -70,7 +70,7 @@ my @langextra_colls = qw(
     langother
 );
 
-my @core_additional = qw( bidi iftex pgf ruhyphen ukrhyph hyphen-greek hyphen-ancientgreek );
+my @core_additional = qw( bidi iftex pgf );
 my @coredoc_additional = qw( bidi iftex pgf luatex pdftex );
 
 sub collection_with_runfiles_pattern {
@@ -160,20 +160,20 @@ sub archpackages {
         my $tlpcoll = $self->get_package("collection-$coll")
             or croak "Can't get object for collection-$coll";
         foreach my $d ( $tlpcoll->depends ) {
+            my $tlpdep = $self->get_package($d);
             next if ( $coll =~ /^fontsextra/ and $d =~ /^(aleph|ocherokee|oinuit)$/ );
             next if ( $coll =~ /^pictures/ and $d eq 'pgf' );
             next if ( $coll =~ /^genericextra/ and $d eq 'iftex' );
-            next if (
-                $coll =~ /^langcyrillic/
-                and ( $d eq 'ruhyphen' or $d eq 'ukrhyph' )
-            );
-            next if (
-                $coll =~ /^langgreek/
-                and ( $d eq 'hyphen-greek' or $d eq 'hyphen-ancientgreek' )
-            );
+            if ( $d eq 'ruhyphen' or $d eq 'ukrhyph' or
+                 $d =~ /^hyphen-/ ) {
+                 # Hyphen packages go to core.
+                 push @{ $tlpackages{'core'} }, $d;
+                 push @{ $tlpackages{"core-doc"} }, $d
+                 if ( $tlpdep->doccontainermd5 or $tlpdep->docsize );
+                 next;
+            }
             push @{ $tlpackages{$coll} }, $d
             unless $d =~ /$SKIPPATTERN/;
-            my $tlpdep = $self->get_package($d);
             if (
                 ( $tlpdep->doccontainermd5
                     or $tlpdep->docsize )
@@ -185,14 +185,22 @@ sub archpackages {
         }
     }
 
+    # Build texlive-langextra
     foreach my $coll (@langextra_colls) {
         my $tlpcoll = $self->get_package("collection-$coll")
             or croak "Can't get object for collection-$coll";
         foreach my $d ( $tlpcoll->depends ) {
-            next if $d =~ /^(omega-devanagari|otibet|bidi)$/;
-            push @{ $tlpackages{'langextra'} }, $d
-            unless ( $d eq 'ebong' or $d =~ /$SKIPPATTERN/ );
+            next if ( $d =~ /^(bidi|ebong)$/ ); # bidi is in core
             my $tlpdep = $self->get_package($d);
+            if ( $d =~ /^hyphen-/ ) {
+                 # Hyphen packages go to core.
+                 push @{ $tlpackages{'core'} }, $d;
+                 push @{ $tlpackages{"core-doc"} }, $d
+                 if ( $tlpdep->doccontainermd5 or $tlpdep->docsize );
+                 next;
+            }
+            push @{ $tlpackages{'langextra'} }, $d
+            unless $d =~ /$SKIPPATTERN/;
             if (
                 ( $tlpdep->doccontainermd5
                     or $tlpdep->docsize )
@@ -214,6 +222,8 @@ sub archversions {
 
     foreach my $coll ( keys %tlpackages ) {
         my @tmp;
+        my $tlpkg = $self->get_package("collection-$coll");
+        push @tmp, $tlpkg->revision if $tlpkg;
         foreach my $pkg ( @{ $tlpackages{$coll} } ) {
             my $tlpkg = $self->get_package($pkg) or croak "Can't get package $pkg: $!";
             #say "Looking for revision nr of package $pkg for $coll";
