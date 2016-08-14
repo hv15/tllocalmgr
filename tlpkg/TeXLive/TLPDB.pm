@@ -95,7 +95,6 @@ use TeXLive::TLCrypto;
 use TeXLive::TLPOBJ;
 use TeXLive::TLUtils qw(dirname mkdirhier member win32 info log debug ddebug
                         tlwarn basename download_file merge_into tldie);
-use TeXLive::TLWinGoo;
 
 use Cwd 'abs_path';
 
