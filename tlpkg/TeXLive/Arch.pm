@@ -156,25 +156,11 @@ sub archpackages {
         }
     }
 
-    my $tlpcoll_fontsextra = $self->get_package("collection-fontsextra")
-        or croak "Can't get object for collection-fontsextra" ;
-    foreach my $d ( $tlpcoll_fontsextra->depends ) {
-        next if $d =~ /^(aleph|ocherokee|oinuit)$/;
-        push @{ $tlpackages{'fontsextra'} }, $d
-        unless $d =~ /$SKIPPATTERN/;
-        my $tlpdep = $self->get_package($d);
-        if ( ( $tlpdep->doccontainermd5 or $tlpdep->docsize )
-            and $d !~ /$SKIPPATTERN/ )
-        {
-            push @{ $tlpackages{'fontsextra-doc'} }, $d;
-        }
-    }
-
     foreach my $coll (@other_colls) {
-        next if $coll eq 'fontsextra';
         my $tlpcoll = $self->get_package("collection-$coll")
             or croak "Can't get object for collection-$coll";
         foreach my $d ( $tlpcoll->depends ) {
+            next if ( $coll =~ /^fontsextra/ and $d =~ /^(aleph|ocherokee|oinuit)$/ );
             next if ( $coll =~ /^pictures/ and $d eq 'pgf' );
             next if ( $coll =~ /^genericextra/ and $d eq 'iftex' );
             next if (
