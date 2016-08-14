@@ -286,6 +286,8 @@ sub from_file {
       $media = 'local_uncompressed';
     } elsif (-d "$rootpath/web2c") {
       $media = 'local_uncompressed';
+    } elsif (-d "$rootpath/$InfraLocation") {
+      $media = 'local_uncompressed';
     } elsif (-d "$rootpath/$Archive") {
       $media = 'local_compressed';
     } else {
