@@ -477,8 +477,12 @@ sub run_installsrc {
 
 sub run_update {
 	foreach (@_) {
-        my $tlpkg  = $tlpdb->get_package($_);
-        my $pkgrev = $tlpkg->revision;
+		my $tlpkg  = $tlpdb->get_package($_);
+		if (! $tlpkg) {
+			warning "$_ is unknown" ;
+			next ;
+		}
+		my $pkgrev = $tlpkg->revision;
 		if ( $locallyinstalledpkg_versions{$_} ) {
 			echo "$_ is already installed with texlive-local-$_";
 			if ($locallyinstalledpkg_versions{$_} == $pkgrev) {
