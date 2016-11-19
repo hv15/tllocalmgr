@@ -29,7 +29,6 @@ my @core_colls = qw/
   latex
   latexrecommended
   luatex
-  mathextra
   metapost
   xetex
   /;
@@ -157,8 +156,14 @@ sub archpackages {
     }
 
     foreach my $coll (@other_colls) {
-        my $tlpcoll = $self->get_package("collection-$coll")
-            or croak "Can't get object for collection-$coll";
+        my $tlpcoll;
+        if ($coll eq "science") {
+            $tlpcoll = $self->get_package("collection-mathscience")
+                or croak "Can't get object for collection-mathscience";
+        } else {
+            $tlpcoll = $self->get_package("collection-$coll")
+                or croak "Can't get object for collection-$coll";
+        }
         foreach my $d ( $tlpcoll->depends ) {
             my $tlpdep = $self->get_package($d);
             next if ( $coll =~ /^fontsextra/ and $d =~ /^(aleph|ocherokee|oinuit)$/ );
