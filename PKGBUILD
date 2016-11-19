@@ -19,11 +19,11 @@ md5sums=('SKIP')
 package() {
   cd $srcdir/$pkgname-$pkgver
   install -d $pkgdir/usr/bin
-  install -d $pkgdir/var/lib/texmf/arch/tlpkg/TeXLive
+  install -d $pkgdir/usr/share/texmf/arch/tlpkg/TeXLive
   install -m755 tllocalmgr $pkgdir/usr/bin/
   cd tlpkg/TeXLive
   for f in *; do
-    install -m644 $f $pkgdir/var/lib/texmf/arch/tlpkg/TeXLive/
+    install -m644 $f $pkgdir/usr/share/texmf/arch/tlpkg/TeXLive/
   done
 }
 

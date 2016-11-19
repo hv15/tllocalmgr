@@ -8,7 +8,7 @@ require LWP::UserAgent;
 use Term::ANSIColor qw(:constants);
 use Term::ShellUI;
 use Getopt::Long;
-use lib ('tlpkg', "/var/lib/texmf/arch/tlpkg");
+use lib ('tlpkg', "/usr/share/texmf/arch/tlpkg");
 use TeXLive::Arch;
 
 die "You can't run this program as root\n" if $ENV{'USER'} eq "root";
