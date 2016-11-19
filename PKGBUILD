@@ -2,7 +2,7 @@
 # Contributor: Firmicus <francois . archlinux . org>
 
 pkgname=texlive-localmanager
-pkgver=0.5
+pkgver=0.5.1
 pkgrel=1
 pkgdesc="A shell and command-line utility to manage TeXLive on Arch Linux"
 arch=('any')
