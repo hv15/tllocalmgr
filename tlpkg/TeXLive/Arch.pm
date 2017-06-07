@@ -15,7 +15,6 @@ my @core_colls = qw/
   basic
   context
   fontsrecommended
-  genericrecommended
   langcjk
   langczechslovak
   langenglish
@@ -30,6 +29,7 @@ my @core_colls = qw/
   latexrecommended
   luatex
   metapost
+  plaingeneric
   xetex
   /;
 
@@ -43,8 +43,6 @@ my @other_colls = qw(
     fontsextra
     formatsextra
     games
-    genericextra
-    htmlxml
     humanities
     langchinese
     langcyrillic
@@ -54,7 +52,6 @@ my @other_colls = qw(
     latexextra
     music
     pictures
-    plainextra
     pstricks
     publishers
     science
@@ -63,9 +60,7 @@ my @other_colls = qw(
 # We also have the collection texlive-langextra which is a meta-collection of
 # the following upstream collections:
 my @langextra_colls = qw(
-    langafrican
     langarabic
-    langindic
     langother
 );
 
