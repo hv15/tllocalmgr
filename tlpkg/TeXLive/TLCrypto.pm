@@ -1,6 +1,6 @@
-# $Id: TLCrypto.pm 41249 2016-05-19 00:39:40Z preining $
+# $Id: TLCrypto.pm 44232 2017-05-06 23:06:56Z karl $
 # TeXLive::TLcrypto.pm - handle checksums and signatures.
-# Copyright 2016 Norbert Preining
+# Copyright 2016-2017 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
@@ -362,10 +362,10 @@ sub test_one_gpg {
   }
   my $ret = system($cmdline);
   if ($ret == 0) {
-    debug("  ... found!\n");
+    debug(" ... gpg ok! [$cmdline]\n");
     return $prg;
   } else {
-    debug("  ... not found!\n");
+    debug(" ... gpg not ok! [$cmdline]\n");
     return "";
   }
 }

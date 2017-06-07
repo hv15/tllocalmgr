@@ -1,12 +1,12 @@
-# $Id: TLPOBJ.pm 41250 2016-05-19 00:39:50Z preining $
+# $Id: TLPOBJ.pm 44293 2017-05-11 18:08:47Z karl $
 # TeXLive::TLPOBJ.pm - module for using tlpobj files
-# Copyright 2007-2016 Norbert Preining
+# Copyright 2007-2017 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLPOBJ;
 
-my $svnrev = '$Revision: 41250 $';
+my $svnrev = '$Revision: 44293 $';
 my $_modulerevision = ($svnrev =~ m/: ([0-9]+) /) ? $1 : "unknown";
 sub module_revision { return $_modulerevision; }
 
@@ -279,7 +279,7 @@ sub writeout {
   defined($self->{'shortdesc'}) && print $fd "shortdesc $self->{'shortdesc'}\n";
   defined($self->{'license'}) && print $fd "license $self->{'license'}\n";
   defined($self->{'relocated'}) && $self->{'relocated'} && print $fd "relocated 1\n";
-  # ugly hack to get rid of use FileHandle; see man perlform
+  # don't want to use FileHandle.pm; see man perlform
   #format_name $fd "multilineformat";
   select((select($fd),$~ = "multilineformat")[0]);
   $fd->format_lines_per_page (99999); # no pages in this format
@@ -759,7 +759,7 @@ sub update_from_catalogue {
       $foo =~ s/^.Date: //;
       # trying to extract the interesting part of a subversion date
       # keyword expansion here, e.g.,
-      # $Date: 2016-05-19 02:39:50 +0200 (Thu, 19 May 2016) $
+      # $Date: 2017-05-11 20:08:47 +0200 (Thu, 11 May 2017) $
       # ->2007-08-15 19:43:35 +0100
       $foo =~ s/ \(.*\)( *\$ *)$//;  # maybe nothing after parens
       $self->cataloguedata->{'date'} = $foo;
@@ -1351,6 +1351,7 @@ sub cataloguedata {
   return $self->{'cataloguedata'};
 }
 
+$: = " \n"; # don't break at -
 format multilineformat =
 longdesc ^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<~~
 $_tmp

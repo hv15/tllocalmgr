@@ -1,12 +1,12 @@
-# $Id: TLTREE.pm 34045 2014-05-15 17:39:06Z karl $
+# $Id: TLTREE.pm 44232 2017-05-06 23:06:56Z karl $
 # TeXLive::TLTREE.pm - work with the tree of all files
-# Copyright 2007-2014 Norbert Preining
+# Copyright 2007-2017 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLTREE;
 
-my $svnrev = '$Revision: 34045 $';
+my $svnrev = '$Revision: 44232 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -68,6 +68,100 @@ sub init_from_files {
   }
   @lines = grep(!/\/\.svn/ , @lines);
   @lines = map { s@^$svnroot@@; s@^/@@; "             1 1 dummy $_" } @lines;
+  $self->{'revision'} = 1;
+  $self->_initialize_lines(@lines);
+}
+
+
+sub init_from_git {
+  my $self = shift;
+  my $svnroot = $self->{'svnroot'};
+  my $retval = $?;
+  my %files;
+  my @lines;
+
+  my @foo = `cd $svnroot; git log --pretty=format:COMMIT=%h --name-only`;
+  if ($retval != 0) {
+    $retval /= 256 if $retval > 0;
+    tldie("TLTree: git log in $svnroot returned $retval, stopping.\n");
+  }
+  chomp(@foo);
+
+  my $curcom = "";
+  for my $l (@foo) {
+    if ($l eq "") {
+      $curcom = "";
+      next;
+    } elsif ($l =~ m/^COMMIT=([[:xdigit:]]*)$/) {
+      $curcom = $1;
+      $rev++;
+      next;
+    } else {
+      # we only use the first occurrence of $f from the top,
+      # that is the most recent change
+      $files{$l} = $rev if (not(defined($files{$l})));
+    }
+  }
+
+  # now reverse the order
+  for my $f (keys %files) {
+    my $n = - ( $files{$f} - $rev ) + 1;
+    push @lines, "             $n $n dummy $f"
+  }
+  # TODO needs to be made better!
+  $self->{'revision'} = $rev;
+  $self->_initialize_lines(@lines);
+}
+
+sub init_from_gitsvn {
+  my $self = shift;
+  my $svnroot = $self->{'svnroot'};
+  my @foo = `cd $svnroot; git log --pretty=format:%h --name-only`;
+  chomp(@foo);
+  my $retval = $?;
+  if ($retval != 0) {
+    $retval /= 256 if $retval > 0;
+    tldie("TLTree: git log in $svnroot returned $retval, stopping.\n");
+  }
+  my %com2rev;
+  my @lines;
+  my $curcom = "";
+  my $currev = "";
+  for my $l (@foo) {
+    if ($l eq "") {
+      $currev = "";
+      $curcom = "";
+      next;
+    }
+    if ($curcom eq "") {
+      # now we should get a commit!
+      # we could also pattern match on 8 hex digits, but that costs time!
+      $curcom = $l;
+      $currev = `git svn find-rev $curcom`;
+      chomp($currev);
+      if (!$currev) {
+        # found a commit without svn rev, try to find it under the parents
+        my $foo = $curcom;
+        my $nr = 0;
+        while (1) {
+          $foo .= "^";
+          $nr++;
+          my $tr = `git svn find-rev $foo`;
+          chomp($tr);
+          if ($tr) {
+            # we add the number of parents to the currev
+            $currev = $tr + $nr;
+            last;
+          }
+        }
+      }
+      $com2rev{$curcom} = $currev;
+    } else {
+      # we got a file name
+      push @lines, "             $currev $currev dummy $l"
+    }
+  }
+  # TODO needs to be made better!
   $self->{'revision'} = 1;
   $self->_initialize_lines(@lines);
 }
@@ -315,15 +409,58 @@ sub _get_files_matching_regexp_pattern {
   return(@returnfiles);
 }
 
+#
+# go through all dir names in the TLTREE such that 
+# which are named like the last entry of @patwords,
+# and which have initial path component of the 
+# rest of @patwords
+#
+# This is not optimal, because many subsetted 
+# dirs are found, example package graphics contains
+# the following exception line to make sure that 
+# these files are not included.
+# docpattern +!d texmf-dist/doc/latex/graphicxbox/examples/graphics
+#
+# We don't need *arbitrary* depth, because what can happen is
+# that the autopattern
+#   docpattern Package t texmf-dist doc %NAME%
+# can match at one of the following
+#   texmf-dist/doc/%NAME
+#   texmf-dist/doc/<SOMETHING>/%NAME
+# but not deeper.
+# Same for the others.
+#
+# Lets say that we try that <SOMETHING> contains at *most* 
+# one (1) / (forward slash/path separator)
+#
+# only for fonts we need a special treatment with 3
+#
 sub _get_files_matching_dir_pattern {
   my ($self,$type,@patwords) = @_;
   my $tl = pop @patwords;
+  my $maxintermediate = 1;
+  if (($#patwords >= 1 && $patwords[1] eq 'fonts')
+      || 
+      ($#patwords >= 2 && $patwords[2] eq 'context')) {
+    $maxintermediate = 2;
+  }
   my @returnfiles;
   if (defined($self->{'_dirnames'}{$tl})) {
     foreach my $tld (@{$self->{'_dirnames'}{$tl}}) {
-      if (index($tld,join("/",@patwords)."/") == 0) {
-        my @files = $self->files_under_path($tld);
-        TeXLive::TLUtils::push_uniq(\@returnfiles, @files);
+      my $startstr = join("/",@patwords)."/";
+      if (index($tld, $startstr) == 0) {
+        my $middlepart = $tld;
+        $middlepart =~ s/\Q$startstr\E//;
+        $middlepart =~ s!/$tl/!!;
+        # put match into list context returns
+        # all matches, which is than coerced to
+        # an integer which gives the number!
+        my $number = () = $middlepart =~ m!/!g;
+        #printf STDERR "DEBUG: maxint=$maxintermediate, number=$number, patwords=@patwords\n";
+        if ($number <= $maxintermediate) {
+          my @files = $self->files_under_path($tld);
+          TeXLive::TLUtils::push_uniq(\@returnfiles, @files);
+        }
       }
     }
   }
@@ -366,7 +503,7 @@ sub revision {
 sub architectures {
   my $self = shift;
   if (@_) { @{ $self->{'archs'} } = @_ }
-  return exists $self->{'archs'} ? @{ $self->{'archs'} } : undef;
+  return defined $self->{'archs'} ? @{ $self->{'archs'} } : ();
 }
 
 

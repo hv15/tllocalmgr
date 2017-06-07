@@ -1,12 +1,12 @@
-# $Id: TLPDB.pm 41180 2016-05-16 02:49:27Z preining $
+# $Id: TLPDB.pm 44355 2017-05-14 22:43:03Z karl $
 # TeXLive::TLPDB.pm - module for using tlpdb files
-# Copyright 2007-2016 Norbert Preining
+# Copyright 2007-2017 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLPDB;
 
-my $svnrev = '$Revision: 41180 $';
+my $svnrev = '$Revision: 44355 $';
 my $_modulerevision = ($svnrev =~ m/: ([0-9]+) /) ? $1 : "unknown";
 sub module_revision { return $_modulerevision; }
 
@@ -66,6 +66,7 @@ C<TeXLive::TLPDB> -- A database of TeX Live Packages
   $tlpdb->setting($key, [$value]);
   $tlpdb->setting([-clear], $key, [$value]);
   $tlpdb->sizes_of_packages($opt_src, $opt_doc, $ref_arch_list [, @packs ]);
+  $tlpdb->sizes_of_packages_with_deps($opt_src, $opt_doc, $ref_arch_list [, @packs ]);
   $tlpdb->install_package($pkg, $dest_tlpdb);
   $tlpdb->remove_package($pkg, %options);
   $tlpdb->install_package_files($file [, $file ]);
@@ -242,7 +243,8 @@ sub remove_tlpobj {
 The C<from_file> function initializes the C<TLPDB> if the root was not
 given at generation time.  See L<TLPDB::new> for more information.
 
-It returns the actual number of packages (TLPOBJs) read from C<$filename>.
+It returns the actual number of packages (TLPOBJs) read from
+C<$filename>, and zero if there are problems (and gives warnings).
 
 =cut
 
@@ -274,7 +276,7 @@ sub from_file {
   my $is_verified = 0;
   # do media detection
   my $rootpath = $self->root;
-  if ($rootpath =~ m,http://|ftp://,) {
+  if ($rootpath =~ m,https?://|ftp://,) {
     $media = 'NET';
   } else {
     if ($rootpath =~ m,file://*(.*)$,) {
@@ -291,15 +293,15 @@ sub from_file {
     } elsif (-d "$rootpath/$Archive") {
       $media = 'local_compressed';
     } else {
-      # we cannot find the right type, return undefined, that should
-      # make people notice
+      # we cannot find the right type, return zero, hope people notice
+      tlwarn("Cannot determine type of tlpdb from $rootpath!\n");
       return 0;
     }
   }
   $self->{'media'} = $media;
   #
   # actually load the TLPDB
-  if ($path =~ m;^((http|ftp)://|file:\/\/*);) {
+  if ($path =~ m;^((https?|ftp)://|file:\/\/*);) {
     debug("TLPDB.pm: trying to initialize from $path\n");
     # now $xzfh filehandle is open, the file created
     # TLUtils::download_file will just overwrite what is there
@@ -1362,19 +1364,23 @@ sub config_revision {
   return "";
 }
 
-
 =pod
+
+=item C<< $tlpdb->sizes_of_packages_with_deps ( $opt_src, $opt_doc, $ref_arch_list, [ @packs ] ) >>
 
 =item C<< $tlpdb->sizes_of_packages ( $opt_src, $opt_doc, $ref_arch_list, [ @packs ] ) >>
 
-This function returns a reference to a hash with package names as keys
+These functions return a reference to a hash with package names as keys
 and the sizes in bytes as values. The sizes are computed for the list of
 package names given as the fourth argument, or all packages if not
-specified.
+specified. The difference between the two functions is that the C<_with_deps>
+gives the size of packages including the size of all depending sizes.
 
 If anything has been computed one additional key is synthesized,
 C<__TOTAL__>, which contains the total size of all packages under
-consideration.
+consideration. In the case of C<_with_deps> this total computation
+does B<not> count packages multiple times, even if they appear
+multiple times as dependencies.
 
 If the third argument is a reference to a list of architectures, then
 only the sizes for the binary packages for these architectures are used,
@@ -1384,7 +1390,26 @@ otherwise all sizes for all architectures are summed.
 
 sub sizes_of_packages {
   my ($self, $opt_src, $opt_doc, $arch_list_ref, @packs) = @_;
+  return $self->_sizes_of_packages(0, $opt_src, $opt_doc, $arch_list_ref, @packs);
+}
+
+sub sizes_of_packages_with_deps {
+  my ($self, $opt_src, $opt_doc, $arch_list_ref, @packs) = @_;
+  return $self->_sizes_of_packages(1, $opt_src, $opt_doc, $arch_list_ref, @packs);
+}
+
+
+sub _sizes_of_packages {
+  my ($self, $with_deps, $opt_src, $opt_doc, $arch_list_ref, @packs) = @_;
   @packs || ( @packs = $self->list_packages() );
+  my @expacks;
+  if ($with_deps) {
+    # don't expand collection->collection dependencies
+    #@exppacks = $self->expand_dependencies('-no-collections', $self, @packs);
+    @exppacks = $self->expand_dependencies($self, @packs);
+  } else {
+    @exppacks = @packs;
+  }
   my @archs;
   if ($arch_list_ref) {
     @archs = @$arch_list_ref;
@@ -1394,22 +1419,84 @@ sub sizes_of_packages {
   }
   my %tlpsizes;
   my %tlpobjs;
-  my $totalsize;
-  foreach my $p (@packs) {
+  my $totalsize = 0;
+  foreach my $p (@exppacks) {
     $tlpobjs{$p} = $self->get_package($p);
     my $media = $self->media_of_package($p);
     if (!defined($tlpobjs{$p})) {
       warn "STRANGE: $p not to be found in ", $self->root;
       next;
     }
-    $tlpsizes{$p} = $self->size_of_one_package($media, $tlpobjs{$p},
-                                               $opt_src, $opt_doc, @archs);
+    #
+    # in case we are calling the _with_deps variant, we always
+    # compute *UNCOMPRESSED* sizes (not the container sizes!!!)
+    if ($with_deps) {
+      $tlpsizes{$p} = $self->size_of_one_package('local_uncompressed' , $tlpobjs{$p},
+                                                 $opt_src, $opt_doc, @archs);
+    } else {
+      $tlpsizes{$p} = $self->size_of_one_package($media, $tlpobjs{$p},
+                                                 $opt_src, $opt_doc, @archs);
+    }
     $totalsize += $tlpsizes{$p};
   }
+  my %realtlpsizes;
   if ($totalsize) {
-    $tlpsizes{'__TOTAL__'} = $totalsize;
+    $realtlpsizes{'__TOTAL__'} = $totalsize;
   }
-  return \%tlpsizes;
+  if (!$with_deps) {
+    for my $p (@packs) {
+      $realtlpsizes{$p} = $tlpsizes{$p};
+    }
+  } else { # the case with dependencies
+    # make three rounds: for packages, collections, schemes
+    # size computations include only those from lower-levels
+    # that is, scheme-scheme, collection-collection
+    # does not contribute to the size
+    for my $p (@exppacks) {
+      next if ($p =~ m/scheme-/);
+      next if ($p =~ m/collection-/);
+      $realtlpsizes{$p} = $tlpsizes{$p};
+    }
+    for my $p (@exppacks) {
+      # only collections
+      next if ($p !~ m/collection-/);
+      $realtlpsizes{$p} = $tlpsizes{$p};
+      ddebug("=== $p adding deps\n");
+      for my $d ($tlpobjs{$p}->depends) {
+        next if ($d =~ m/^collection-/);
+        next if ($d =~ m/^scheme-/);
+        ddebug("=== going for $d\n");
+        if (defined($tlpsizes{$d})) {
+          $realtlpsizes{$p} += $tlpsizes{$d};
+          ddebug("=== found $tlpsizes{$d} for $d\n");
+        } else {
+          # silently ignore missing defined packages - they should have
+          # been computed by expand-dependencies
+          debug("TLPDB.pm: size with deps: sub package not found main=$d, dep=$p\n");
+        }
+      }
+    }
+    for my $p (@exppacks) {
+      # only schemes
+      next if ($p !~ m/scheme-/);
+      $realtlpsizes{$p} = $tlpsizes{$p};
+      ddebug("=== $p adding deps\n");
+      for my $d ($tlpobjs{$p}->depends) {
+        # should not be necessary, we don't have collection -> scheme deps
+        next if ($d =~ m/^scheme-/);
+        ddebug("=== going for $d\n");
+        if (defined($realtlpsizes{$d})) {
+          $realtlpsizes{$p} += $realtlpsizes{$d};
+          ddebug("=== found $realtlpsizes{$d} for $d\n");
+        } else {
+          # silently ignore missing defined packages - they should have
+          # been computed by expand-dependencies
+          debug("TLPDB.pm: size with deps: sub package not found main=$d, dep=$p\n");
+        }
+      }
+    }
+  }
+  return \%realtlpsizes;
 }
 
 sub size_of_one_package {
@@ -1706,9 +1793,10 @@ sub not_virtual_install_package {
     # we have to write out the tlpobj file since it is contained in the
     # archives (.tar.xz) but at DVD install time we don't have them
     my $tlpod = $totlpdb->root . "/tlpkg/tlpobj";
-    mkdirhier( $tlpod );
+    mkdirhier($tlpod);
     my $count = 0;
-    until (open(TMP,">$tlpod/".$tlpobj->name.".tlpobj")) {
+    my $tlpobj_file = ">$tlpod/" . $tlpobj->name . ".tlpobj";
+    until (open(TMP, $tlpobj_file)) {
       # The open might fail for no good reason on Windows.
       # Try again for a while, but not forever.
       if ($count++ == 100) { die "$0: open($tlpobj_file) failed: $!"; }
@@ -1916,9 +2004,9 @@ sub remove_package {
     # files will be gone ...
     if (defined($opts{'nopostinstall'}) && $opts{'nopostinstall'}) {
       &TeXLive::TLUtils::do_postaction("remove", $tlp,
-        0, # option_file_assocs,
-        0, # option_desktop_integration, menu part
-        0, # option_desktop_integration, desktop part
+        0, # tlpdbopt_file_assocs,
+        0, # tlpdbopt_desktop_integration, menu part
+        0, # tlpdbopt_desktop_integration, desktop part
         $localtlpdb->option("post_code"));
     }
     # 
