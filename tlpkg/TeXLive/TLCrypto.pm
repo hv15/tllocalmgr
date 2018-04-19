@@ -1,6 +1,6 @@
-# $Id: TLCrypto.pm 44232 2017-05-06 23:06:56Z karl $
+# $Id: TLCrypto.pm 46745 2018-02-26 18:16:54Z karl $
 # TeXLive::TLcrypto.pm - handle checksums and signatures.
-# Copyright 2016-2017 Norbert Preining
+# Copyright 2016-2018 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
@@ -12,7 +12,7 @@ use TeXLive::TLConfig;
 use TeXLive::TLUtils qw(debug ddebug win32 which platform conv_to_w32_path tlwarn tldie);
 
 
-my $svnrev = '$Revision: 40650 $';
+my $svnrev = '$Revision$';
 my $_modulerevision = ($svnrev =~ m/: ([0-9]+) /) ? $1 : "unknown";
 sub module_revision { return $_modulerevision; }
 
@@ -54,6 +54,14 @@ BEGIN {
     &verify_checksum
     &setup_gpg
     &verify_signature
+    %VerificationStatusDescription
+    $VS_VERIFIED $VS_CHECKSUM_ERROR $VS_SIGNATURE_ERROR $VS_CONNECTION_ERROR
+    $VS_UNSIGNED $VS_GPG_UNAVAILABLE $VS_PUBKEY_MISSING $VS_UNKNOWN
+  );
+  @EXPORT = qw(
+    %VerificationStatusDescription
+    $VS_VERIFIED $VS_CHECKSUM_ERROR $VS_SIGNATURE_ERROR $VS_CONNECTION_ERROR
+    $VS_UNSIGNED $VS_GPG_UNAVAILABLE $VS_PUBKEY_MISSING $VS_UNKNOWN
   );
 }
 
@@ -172,7 +180,7 @@ sub tlchecksum {
     } elsif ($::checksum_method eq "digest::sha") {
       $cs = $out;
     }
-    ddebug("tlchecksum: cs ===$cs===\n");
+    debug("tlchecksum($file): ===$cs===\n");
     if (length($cs) != 128) {
       tlwarn("unexpected output from $::checksum_method: $out\n");
       return "";
@@ -216,9 +224,14 @@ sub tl_short_digest { return (Digest::MD5::md5_hex(shift)); }
 Verifies that C<$file> has checksum C<$checksum_url>, and if gpg is
 available also verifies that the checksum is signed.
 
-Returns 0 on success, -1 on connection error, -2 on missing signature
-file, -3 if no gpg program is available, -4 if the pubkey is not
-available,  1 on checksum errors, and 2 on signature errors.
+Returns 
+C<$VS_VERIFIED> on success, 
+C<$VS_CONNECTION_ERROR> on connection error,
+C<$VS_UNSIGNED> on missing signature file, 
+C<$VS_GPG_UNAVAILABLE> if no gpg program is available,
+C<$VS_PUBKEY_MISSING> if the pubkey is not available, 
+C<$VS_CHECKSUM_ERROR> on checksum errors,and 
+C<$VS_SIGNATURE_ERROR> on signature errors.
 In case of errors returns an informal message as second argument.
 
 =cut
@@ -227,32 +240,38 @@ sub verify_checksum {
   my ($file, $checksum_url) = @_;
   # don't do anything if we cannot determine a checksum method
   # return -2 which is as much as missing signature
-  return(-2) if (!$::checksum_method);
+  return($VS_UNSIGNED) if (!$::checksum_method);
   my $checksum_file
     = TeXLive::TLUtils::download_to_temp_or_file($checksum_url);
 
   # next step is verification of tlpdb checksum with checksum file
   # existenc of checksum_file was checked above
   if (!$checksum_file) {
-    return(-1, "download did not succeed: $checksum_url");
+    debug("verify_checksum: download did not succeed for $checksum_url\n");
+    return($VS_CONNECTION_ERROR, "download did not succeed: $checksum_url");
   }
   # check the signature
   my ($ret, $msg) = verify_signature($checksum_file, $checksum_url);
-  return ($ret, $msg) if ($ret != 0);
+
+  if ($ret != 0) {
+    debug("verify_checksum: returning $ret and $msg\n");
+    return ($ret, $msg)
+  }
 
   # verify local data
   open $cs_fh, "<$checksum_file" or die("cannot read file: $!");
   if (read ($cs_fh, $remote_digest, $ChecksumLength) != $ChecksumLength) {
     close($cs_fh);
-    return(1, "incomplete read from $checksum_file");
+    debug("verify_checksum: incomplete read from\n  $checksum_file\nfor\n  $file\nand\n  $checksum_url\n");
+    return($VS_CHECKSUM_ERROR, "incomplete read from $checksum_file");
   } else {
     close($cs_fh);
-    ddebug("found remote digest: $remote_digest\n");
+    debug("verify_checksum: found remote digest\n  $remote_digest\nfrom\n  $checksum_file\nfor\n  $file\nand\n  $checksum_url\n");
   }
   $local_digest = tlchecksum($file);
-  ddebug("local_digest = $local_digest\n");
+  debug("verify_checksum: local_digest = $local_digest\n");
   if ($local_digest ne $remote_digest) {
-    return(1, "digest disagree");
+    return($VS_CHECKSUM_ERROR, "digest disagree");
   }
 
   # we are still here, so checksum also succeeded
@@ -378,8 +397,12 @@ sub test_one_gpg {
 Verifies a download of C<$url> into C<$file> by cheking the 
 gpg signature in C<$url.asc>.
 
-Returns 0 on success, -2 on missing signature file, 2 on signature error,
--3 if no gpg is available, and -4 if a pubkey is missing.
+Returns 
+$VS_VERIFIED on success, 
+$VS_UNSIGNED on missing signature file, 
+$VS_SIGNATURE_ERROR on signature error,
+$VS_GPG_UNAVAILABLE if no gpg is available, and 
+$VS_PUBKEY_MISSING if a pubkey is missing.
 In case of errors returns an informal message as second argument.
 
 =cut
@@ -397,11 +420,11 @@ sub verify_signature {
       if ($ret == 1) {
         # no need to show the output
         debug("cryptographic signature of $url verified\n");
-        return(0);
+        return($VS_VERIFIED);
       } elsif ($ret == -1) {
-        return(-4, $out);
+        return($VS_PUBKEY_MISSING, $out);
       } else {
-        return(2, <<GPGERROR);
+        return($VS_SIGNATURE_ERROR, <<GPGERROR);
 cryptographic signature verification of
   $file
 against
@@ -413,15 +436,15 @@ GPGERROR
       }
     } else {
       debug("no access to cryptographic signature $signature_url\n");
-      return(-2, "no access to cryptographic signature");
+      return($VS_UNSIGNED, "no access to cryptographic signature");
     }
   } else {
     debug("gpg prog not defined, no checking of signatures\n");
     # we return 0 (= success) if not gpg is available
-    return(-3, "no gpg available");
+    return($VS_GPG_UNAVAILABLE, "no gpg available");
   }
   # not reached
-  return (0);
+  return ($VS_UNKNOWN);
 }
 
 =pod
@@ -460,6 +483,34 @@ sub gpg_verify_signature {
     return (0, $out);
   }
 }
+
+=pod
+
+=item C<< %VerificationStatusDescription >>
+
+Provides a textual representation for the verification status values.
+
+=cut
+
+our $VS_VERIFIED = 0;
+our $VS_CHECKSUM_ERROR = 1;
+our $VS_SIGNATURE_ERROR = 2;
+our $VS_CONNECTION_ERROR = -1;
+our $VS_UNSIGNED = -2;
+our $VS_GPG_UNAVAILABLE = -3;
+our $VS_PUBKEY_MISSING = -4;
+our $VS_UNKNOWN = -100;
+
+our %VerificationStatusDescription = (
+  $VS_VERIFIED         => 'verified',
+  $VS_CHECKSUM_ERROR   => 'checksum error',
+  $VS_SIGNATURE_ERROR  => 'signature error',
+  $VS_CONNECTION_ERROR => 'connection error',
+  $VS_UNSIGNED         => 'unsigned',
+  $VS_GPG_UNAVAILABLE  => 'gpg unavailable',
+  $VS_PUBKEY_MISSING   => 'pubkey missing',
+  $VS_UNKNOWN          => 'unknown',
+);
 
 =back
 =cut

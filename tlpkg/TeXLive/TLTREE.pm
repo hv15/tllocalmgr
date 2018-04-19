@@ -1,12 +1,12 @@
-# $Id: TLTREE.pm 44232 2017-05-06 23:06:56Z karl $
+# $Id: TLTREE.pm 46745 2018-02-26 18:16:54Z karl $
 # TeXLive::TLTREE.pm - work with the tree of all files
-# Copyright 2007-2017 Norbert Preining
+# Copyright 2007-2018 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLTREE;
 
-my $svnrev = '$Revision: 44232 $';
+my $svnrev = '$Revision: 46745 $';
 my $_modulerevision;
 if ($svnrev =~ m/: ([0-9]+) /) {
   $_modulerevision = $1;
@@ -78,9 +78,10 @@ sub init_from_git {
   my $svnroot = $self->{'svnroot'};
   my $retval = $?;
   my %files;
+  my %deletedfiles;
   my @lines;
 
-  my @foo = `cd $svnroot; git log --pretty=format:COMMIT=%h --name-only`;
+  my @foo = `cd $svnroot; git log --pretty=format:COMMIT=%h --no-renames --name-status`;
   if ($retval != 0) {
     $retval /= 256 if $retval > 0;
     tldie("TLTree: git log in $svnroot returned $retval, stopping.\n");
@@ -97,9 +98,27 @@ sub init_from_git {
       $rev++;
       next;
     } else {
-      # we only use the first occurrence of $f from the top,
-      # that is the most recent change
-      $files{$l} = $rev if (not(defined($files{$l})));
+      # output is 
+      #   STATUS FILENAME
+      # where STATUS is as follows:
+      #   Added (A), Copied (C), Deleted (D), Modified (M), Renamed (R), have their type (i.e. regular file,
+      #   symlink, submodule, ...) changed (T), are Unmerged (U), are Unknown (X), or have had their pairing Broken (B).
+      if ($l =~ m/^(A|C|D|M|R|T|U|X|B)\S*\s+(.*)$/) {
+        my $status = $1;
+        my $curfile = $2;
+        #
+        # check whether the file was already removed
+        if (!defined($files{$curfile}) && !defined($deletedfiles{$curfile})) {
+          # first occurrence of that file
+          if ($status eq "D") {
+            $deletedfiles{$curfile} = 1;
+          } else {
+            $files{$curfile} = $rev;
+          }
+        }
+      } else {
+        print STDERR "Unknown line in git output: >>$l<<\n";
+      }
     }
   }
 

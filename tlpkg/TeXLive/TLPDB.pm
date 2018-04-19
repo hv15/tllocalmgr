@@ -1,12 +1,12 @@
-# $Id: TLPDB.pm 44355 2017-05-14 22:43:03Z karl $
+# $Id: TLPDB.pm 46750 2018-02-27 01:10:30Z preining $
 # TeXLive::TLPDB.pm - module for using tlpdb files
-# Copyright 2007-2017 Norbert Preining
+# Copyright 2007-2018 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLPDB;
 
-my $svnrev = '$Revision: 44355 $';
+my $svnrev = '$Revision: 46750 $';
 my $_modulerevision = ($svnrev =~ m/: ([0-9]+) /) ? $1 : "unknown";
 sub module_revision { return $_modulerevision; }
 
@@ -28,6 +28,7 @@ C<TeXLive::TLPDB> -- A database of TeX Live Packages
   $tlpdb->from_file($filename);
   $tlpdb->writeout;
   $tlpdb->writeout(FILEHANDLE);
+  $tlpdb->as_json;
   $tlpdb->save;
   $tlpdb->media;
   $tlpdb->available_architectures();
@@ -58,6 +59,7 @@ C<TeXLive::TLPDB> -- A database of TeX Live Packages
   $tlpdb->config_release;
   $tlpdb->config_minrelease;
   $tlpdb->config_revision;
+  $tlpdb->config_frozen;
   $tlpdb->options;
   $tlpdb->option($key, [$value]);
   $tlpdb->reset_options();
@@ -270,7 +272,7 @@ sub from_file {
   } else {
     $self->root($root_from_path);
   }
-  $self->verification_status("unknown");
+  $self->verification_status($VS_UNKNOWN);
   my $retfh;
   my $tlpdbfile;
   my $is_verified = 0;
@@ -368,24 +370,24 @@ sub from_file {
     # before we open and proceed, verify the downloaded file
     if ($params{'verify'} && $media ne 'local_uncompressed') {
       my ($r, $m) = TeXLive::TLCrypto::verify_checksum($tlpdbfile, "$path.$TeXLive::TLConfig::ChecksumExtension");
-      if ($r == 1) {
+      if ($r == $VS_CHECKSUM_ERROR) {
         tldie("$0: checksum error when downloading $tlpdbfile from $path: $m\n");
-      } elsif ($r == 2) {
+      } elsif ($r == $VS_SIGNATURE_ERROR) {
         tldie("$0: signature verification error of $tlpdbfile from $path: $m\n");
-      } elsif ($r == -1) {
+      } elsif ($r == $VS_CONNECTION_ERROR) {
         tldie("$0: cannot download: $m\n");
-      } elsif ($r == -2) {
+      } elsif ($r == $VS_UNSIGNED) {
         debug("$0: remote database checksum is not signed, continuing anyway!\n");
-        $self->verification_status("not signed");
-      } elsif ($r == -3) {
+        $self->verification_status($r);
+      } elsif ($r == $VS_GPG_UNAVAILABLE) {
         debug("$0: TLPDB: no gpg available, continuing anyway!\n");
-        $self->verification_status("gnupg not available");
-      } elsif ($r == -4) {
+        $self->verification_status($r);
+      } elsif ($r == $VS_PUBKEY_MISSING) {
         debug("$0: TLPDB: pubkey missing, continuing anyway!\n");
-        $self->verification_status("pubkey missing");
-      } elsif ($r == 0) {
+        $self->verification_status($r);
+      } elsif ($r == $VS_VERIFIED) {
         $is_verified = 1;
-        $self->verification_status("verified");
+        $self->verification_status($r);
       } else {
         tldie("$0: unexpected return value from verify_checksum: $r\n");
       }
@@ -394,23 +396,24 @@ sub from_file {
   } else {
     if ($params{'verify'} && $media ne 'local_uncompressed') {
       my ($r, $m) = TeXLive::TLCrypto::verify_checksum($path, "$path.$TeXLive::TLConfig::ChecksumExtension");
-      if ($r == 1) {
+      if ($r == $VS_CHECKSUM_ERROR) {
         tldie("$0: checksum error when downloading $path from $path: $m\n");
-      } elsif ($r == 2) {
+      } elsif ($r == $VS_SIGNATURE_ERROR) {
         tldie("$0: signature verification error of $path from $path: $m\n");
-      } elsif ($r == -1) {
+      } elsif ($r == $VS_CONNECTION_ERROR) {
         tldie("$0: cannot download: $m\n");
-      } elsif ($r == -2) {
+      } elsif ($r == $VS_UNSIGNED) {
         debug("$0: remote database checksum is not signed, continuing anyway!\n");
-        $self->verification_status("not signed");
-      } elsif ($r == -3) {
+        $self->verification_status($r);
+      } elsif ($r == $VS_GPG_UNAVAILABLE) {
         debug("$0: TLPDB: no gpg available, continuing anyway!\n");
-        $self->verification_status("gnupg not available");
-      } elsif ($r == -4) {
+        $self->verification_status($r);
+      } elsif ($r == $VS_PUBKEY_MISSING) {
         debug("$0: TLPDB: pubkey missing, continuing anyway!\n");
-        $self->verification_status("pubkey missing");
-      } elsif ($r == 0) {
+        $self->verification_status($r);
+      } elsif ($r == $VS_VERIFIED) {
         $is_verified = 1;
+        $self->verification_status($r);
       } else {
         tldie("$0: unexpected return value from verify_checksum: $r\n");
       }
@@ -462,6 +465,147 @@ sub writeout {
     $self->{'tlps'}{$_}->writeout($fd);
     print $fd "\n";
   }
+}
+
+=pod
+
+=item C<< $tlpdb->as_json >>
+
+The C<as_json> function returns a JSON UTF8 encoded representation of the
+database, that is a JSON array of packages. If the database is virtual,
+a JSON array where each element is a hash with two keys, C<tag> giving
+the tag of the sub-database, and C<tlpdb> giving the JSON of the database.
+
+=cut
+
+sub as_json {
+  my $self = shift;
+  my $ret = "{";
+  if ($self->is_virtual) {
+    my $firsttlpdb = 1;
+    for my $k (keys %{$self->{'tlpdbs'}}) {
+      $ret .= ",\n" if (!$firsttlpdb);
+      $ret .= "\"$k\":";
+      $firsttlpdb = 0;
+      $ret .= $self->{'tlpdbs'}{$k}->_as_json;
+    }
+  } else {
+    $ret .= "\"main\":";
+    $ret .= $self->_as_json;
+  }
+  $ret .= "}\n";
+  return($ret);
+}
+
+sub options_as_json {
+  my $self = shift;
+  die("calling _as_json on virtual is not supported!") if ($self->is_virtual);
+  my $opts = $self->options;
+  my @opts;
+  for my $k (keys %TeXLive::TLConfig::TLPDBOptions) {
+    my %foo;
+    $foo{'name'} = $k;
+    $foo{'tlmgrname'} = $TeXLive::TLConfig::TLPDBOptions{$k}[2];
+    $foo{'description'} = $TeXLive::TLConfig::TLPDBOptions{$k}[3];
+    $foo{'format'} = $TeXLive::TLConfig::TLPDBOptions{$k}[0];
+    $foo{'default'} = "$TeXLive::TLConfig::TLPDBOptions{$k}[1]";
+    # if ($TeXLive::TLConfig::TLPDBOptions{$k}[0] =~ m/^n/) {
+    #   if (exists($opts->{$k})) {
+    #     $foo{'value'} = $opts->{$k};
+    #     $foo{'value'} += 0;
+    #   }
+    #   $foo{'default'} += 0;
+    # } elsif ($TeXLive::TLConfig::TLPDBOptions{$k}[0] eq "b") {
+    #   if (exists($opts->{$k})) {
+    #     $foo{'value'} = ($opts->{$k} ? TeXLive::TLUtils::True() : TeXLive::TLUtils::False());
+    #   }
+    #   $foo{'default'} = ($foo{'default'} ? TeXLive::TLUtils::True() : TeXLive::TLUtils::False());
+    # } elsif ($k eq "location") {
+    #   my %def;
+    #   $def{'main'} = $TeXLive::TLConfig::TLPDBOptions{$k}[1];
+    #   $foo{'default'} = \%def;
+    #   if (exists($opts->{$k})) {
+    #     my %repos = TeXLive::TLUtils::repository_to_array($opts->{$k});
+    #     $foo{'value'} = \%repos;
+    #   }
+    # } elsif ($TeXLive::TLConfig::TLPDBOptions{$k}[0] eq "p") {
+    #   # strings/path
+    #   if (exists($opts->{$k})) {
+    #     $foo{'value'} = $opts->{$k};
+    #   }
+    # } else {
+    
+    # TREAT ALL VALUES AS STRINGS, otherwise not parsable JSON
+      # treat as strings
+      if (exists($opts->{$k})) {
+        $foo{'value'} = $opts->{$k};
+      }
+    #  }
+    push @opts, \%foo;
+  }
+  return(TeXLive::TLUtils::encode_json(\@opts));
+}
+
+sub settings_as_json {
+  my $self = shift;
+  die("calling _as_json on virtual is not supported!") if ($self->is_virtual);
+  my $sets = $self->settings;
+  my @json;
+  for my $k (keys %TeXLive::TLConfig::TLPDBSettings) {
+    my %foo;
+    $foo{'name'} = $k;
+    $foo{'type'} = $TeXLive::TLConfig::TLPDBSettings{$k}[0];
+    $foo{'description'} = $TeXLive::TLConfig::TLPDBSettings{$k}[1];
+    # if ($TeXLive::TLConfig::TLPDBSettings{$k}[0] eq "b") {
+    #   if (exists($sets->{$k})) {
+    #     $foo{'value'} = ($sets->{$k} ? TeXLive::TLUtils::True() : TeXLive::TLUtils::False());
+    #   }
+    # } elsif ($TeXLive::TLConfig::TLPDBSettings{$k} eq "available_architectures") {
+    #   if (exists($sets->{$k})) {
+    #     my @lof = $self->available_architectures;
+    #     $foo{'value'} = \@lof;
+    #   }
+    # } else {
+      if (exists($sets->{$k})) {
+        $foo{'value'} = "$sets->{$k}";
+      }
+    # }
+    push @json, \%foo;
+  }
+  return(TeXLive::TLUtils::encode_json(\@json));
+}
+
+sub configs_as_json {
+  my $self = shift;
+  die("calling _as_json on virtual is not supported!") if ($self->is_virtual);
+  my %cfgs;
+  $cfgs{'container_split_src_files'} = ($self->config_src_container ? TeXLive::TLUtils::True() : TeXLive::TLUtils::False());
+  $cfgs{'container_split_doc_files'} = ($self->config_doc_container ? TeXLive::TLUtils::True() : TeXLive::TLUtils::False());
+  $cfgs{'container_format'} = $self->config_container_format;
+  $cfgs{'release'} = $self->config_release;
+  $cfgs{'minrelease'} = $self->config_minrelease;
+  return(TeXLive::TLUtils::encode_json(\%cfgs));
+}
+
+sub _as_json {
+  my $self = shift;
+  die("calling _as_json on virtual is not supported!") if ($self->is_virtual);
+  my $ret = "{";
+  $ret .= '"options":';
+  $ret .= $self->options_as_json();
+  $ret .= ',"settings":';
+  $ret .= $self->settings_as_json();
+  $ret .= ',"configs":';
+  $ret .= $self->configs_as_json();
+  $ret .= ',"tlpkgs": [';
+  my $first = 1;
+  foreach (keys %{$self->{'tlps'}}) {
+    $ret .= ",\n" if (!$first);
+    $first = 0;
+    $ret .= $self->{'tlps'}{$_}->as_json;
+  }
+  $ret .= "]}";
+  return($ret);
 }
 
 =pod
@@ -650,6 +794,7 @@ sub get_package {
 
 sub _get_package {
   my ($self,$pkg) = @_;
+  return undef if (!$pkg);
   if (defined($self->{'tlps'}{$pkg})) {
   my $ret = $self->{'tlps'}{$pkg};
     return $self->{'tlps'}{$pkg};
@@ -1175,8 +1320,8 @@ sub is_verified {
 
 =item C<< $tlpdb->verification_status >>
 
-Returns a short textual explanation of the verification status. 
-In particular if the database is not verified, it returns the reason.
+Returns the id of the verification status. To obtain a textual representation
+us %TLCrypto::VerificationStatusDescription.
 
 =cut
 
@@ -1261,7 +1406,7 @@ sub config_doc_container {
 
 =pod
 
-=item C<< $tlpdb->config_doc_container >>
+=item C<< $tlpdb->config_container_format >>
 
 Returns the currently set default container format. See Options below.
 
@@ -1330,6 +1475,32 @@ sub config_minrelease {
   if (defined($tlp)) {
     foreach my $d ($tlp->depends) {
       if ($d =~ m!^minrelease/(.*)$!) {
+        return "$1";
+      }
+    }
+  }
+  return;
+}
+
+=pod
+
+=item C<< $tlpdb->config_frozen >>
+
+Returns true if the location is frozen.
+
+=cut
+
+sub config_frozen {
+  my $self = shift;
+  my $tlp;
+  if ($self->is_virtual) {
+    $tlp = $self->{'tlpdbs'}{'main'}->get_package('00texlive.config');
+  } else {
+    $tlp = $self->{'tlps'}{'00texlive.config'};
+  }
+  if (defined($tlp)) {
+    foreach my $d ($tlp->depends) {
+      if ($d =~ m!^frozen/(.*)$!) {
         return "$1";
       }
     }
@@ -1726,7 +1897,7 @@ sub not_virtual_install_package {
     } elsif (&media eq 'NET') {
       $container = "$root/$Archive/$pkg.$TeXLive::TLConfig::DefaultContainerExtension";
     }
-    $self->_install_data ($container, $reloc, \@installfiles, $totlpdb, $tlpobj->containersize, $tlpobj->containermd5)
+    $self->_install_data ($container, $reloc, \@installfiles, $totlpdb, $tlpobj->containersize, $tlpobj->containerchecksum)
       || return(0);
     # if we are installing from local_compressed or NET we have to fetch the respective
     # source and doc packages $pkg.source and $pkg.doc and install them, too
@@ -1745,13 +1916,13 @@ sub not_virtual_install_package {
       if ($container_src_split && $opt_src && $tlpobj->srcfiles) {
         my $srccontainer = $container;
         $srccontainer =~ s/(\.tar\.xz|\.zip)$/.source$1/;
-        $self->_install_data ($srccontainer, $reloc, \@installfiles, $totlpdb, $tlpobj->srccontainersize, $tlpobj->srccontainermd5)
+        $self->_install_data ($srccontainer, $reloc, \@installfiles, $totlpdb, $tlpobj->srccontainersize, $tlpobj->srccontainerchecksum)
           || return(0);
       }
       if ($container_doc_split && $real_opt_doc && $tlpobj->docfiles) {
         my $doccontainer = $container;
         $doccontainer =~ s/(\.tar\.xz|\.zip)$/.doc$1/;
-        $self->_install_data ($doccontainer, $reloc, \@installfiles, $totlpdb, $tlpobj->doccontainersize, $tlpobj->doccontainermd5)
+        $self->_install_data ($doccontainer, $reloc, \@installfiles, $totlpdb, $tlpobj->doccontainersize, $tlpobj->doccontainerchecksum)
           || return(0);
       }
       #
@@ -1884,6 +2055,9 @@ sub _install_data {
         $target .= "/$TeXLive::TLConfig::RelocTree";
       }
     }
+    my $ww = ($whatsize || "<unset>");
+    my $ss = ($whatcheck || "<unset>");
+    debug("tlpdb:_install_data: what=$what, target=$target, size=$ww, checksum=$ss, tmpdir=$tempdir\n");
     my ($ret, $pkg) = TeXLive::TLUtils::unpack($what, $target, 'size' => $whatsize, 'checksum' => $whatcheck, 'tmpdir' => $tempdir);
     if (!$ret) {
       tlwarn("TLPDB::_install_package: $pkg\n");
@@ -1903,20 +2077,20 @@ sub _install_data {
 
 =item << $tlpdb->remove_package($pkg, %options) >>
 
-removes a single package with all the files and the entry in the db.
+Removes a single package with all the files and the entry in the db;
+warns if the package does not exist.
 
 =cut
 
-#
 # remove_package removes a single package with all files (including the
-# # tlpobj files) and the entry from the tlpdb.
+# tlpobj files) and the entry from the tlpdb.
 sub remove_package {
   my ($self, $pkg, %opts) = @_;
   my $localtlpdb = $self;
   my $tlp = $localtlpdb->get_package($pkg);
   my $usertree = $localtlpdb->setting("usertree");
   if (!defined($tlp)) {
-    tlwarn ("TLPDB: package not present, cannot remove: $pkg\n");
+    tlwarn ("TLPDB: package not present, so nothing to remove: $pkg\n");
   } else {
     my $currentarch = $self->platform();
     if ($pkg eq "texlive.infra" || $pkg eq "texlive.infra.$currentarch") {

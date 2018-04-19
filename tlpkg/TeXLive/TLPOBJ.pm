@@ -1,12 +1,12 @@
-# $Id: TLPOBJ.pm 44293 2017-05-11 18:08:47Z karl $
+# $Id: TLPOBJ.pm 46745 2018-02-26 18:16:54Z karl $
 # TeXLive::TLPOBJ.pm - module for using tlpobj files
-# Copyright 2007-2017 Norbert Preining
+# Copyright 2007-2018 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLPOBJ;
 
-my $svnrev = '$Revision: 44293 $';
+my $svnrev = '$Revision: 46745 $';
 my $_modulerevision = ($svnrev =~ m/: ([0-9]+) /) ? $1 : "unknown";
 sub module_revision { return $_modulerevision; }
 
@@ -420,6 +420,58 @@ sub writeout_simple {
   }
 }
 
+sub as_json {
+  my $self = shift;
+  my %addargs = @_;
+  my %foo = %{$self};
+  # set the additional args
+  for my $k (keys %addargs) {
+    if (defined($addargs{$k})) {
+      $foo{$k} = $addargs{$k};
+    } else {
+      delete($foo{$k});
+    }
+  }
+  # make sure numbers are encoded as numbers
+  for my $k (qw/revision runsize docsize srcsize containersize lrev rrev
+                srccontainersize doccontainersize runcontainersize/) {
+    $foo{$k} += 0 if exists($foo{$k});
+  }
+  for my $k (keys %{$foo{'binsize'}}) {
+    $foo{'binsize'}{$k} += 0;
+  }
+  # encode boolean as boolean flags
+  if (exists($foo{'relocated'})) {
+    if ($foo{'relocated'}) {
+      $foo{'relocated'} = TeXLive::TLUtils::True();
+    } else {
+      $foo{'relocated'} = TeXLive::TLUtils::False();
+    }
+  }
+  # adjust the docfiles entry to the specification in JSON-formats
+  my @docf = $self->docfiles;
+  my $dfd = $self->docfiledata;
+  my @newdocf;
+  for my $f ($self->docfiles) {
+    my %newd;
+    $newd{'file'} = $f;
+    if (defined($dfd->{$f})) {
+      # TODO should we check that there are actually only "details"
+      # and "language" as key?
+      for my $k (keys %{$dfd->{$f}}) {
+        $newd{$k} = $dfd->{$f}->{$k};
+      }
+    }
+    push @newdocf, \%newd;
+  }
+  $foo{'docfiles'} = [ @newdocf ];
+  delete($foo{'docfiledata'});
+  #
+  my $utf8_encoded_json_text = TeXLive::TLUtils::encode_json(\%foo);
+  return $utf8_encoded_json_text;
+}
+
+
 sub cancel_reloc_prefix {
   my $self = shift;
   my @docfiles = $self->docfiles;
@@ -759,7 +811,7 @@ sub update_from_catalogue {
       $foo =~ s/^.Date: //;
       # trying to extract the interesting part of a subversion date
       # keyword expansion here, e.g.,
-      # $Date: 2017-05-11 20:08:47 +0200 (Thu, 11 May 2017) $
+      # $Date: 2018-02-26 19:16:54 +0100 (Mon, 26 Feb 2018) $
       # ->2007-08-15 19:43:35 +0100
       $foo =~ s/ \(.*\)( *\$ *)$//;  # maybe nothing after parens
       $self->cataloguedata->{'date'} = $foo;
@@ -1142,6 +1194,18 @@ sub _parse_hyphen_execute {
 
 # member access functions
 #
+sub _set_get_array_value {
+  my $self = shift;
+  my $key = shift;
+  if (@_) { 
+    if (defined($_[0])) {
+      $self->{$key} = [ @_ ];
+    } else {
+      $self->{$key} = [ ];
+    }
+  }
+  return @{ $self->{$key} };
+}
 sub name {
   my $self = shift;
   if (@_) { $self->{'name'} = shift }
@@ -1178,9 +1242,7 @@ sub catalogue {
   return $self->{'catalogue'};
 }
 sub srcfiles {
-  my $self = shift;
-  if (@_) { $self->{'srcfiles'} = [ @_ ] }
-  return @{ $self->{'srcfiles'} };
+  _set_get_array_value(shift, "srcfiles", @_);
 }
 sub containersize {
   my $self = shift;
@@ -1200,17 +1262,32 @@ sub doccontainersize {
 sub containermd5 {
   my $self = shift;
   if (@_) { $self->{'containermd5'} = shift }
-  return ( defined($self->{'containermd5'}) ? $self->{'containermd5'} : "" );
+  if (defined($self->{'containermd5'})) {
+    return ($self->{'containermd5'});
+  } else {
+    tlwarn("TLPOBJ: MD5 sums are no longer supported, please adapt your code!\n");
+    return ("");
+  }
 }
 sub srccontainermd5 {
   my $self = shift;
   if (@_) { $self->{'srccontainermd5'} = shift }
-  return ( defined($self->{'srccontainermd5'}) ? $self->{'srccontainermd5'} : "" );
+  if (defined($self->{'srccontainermd5'})) {
+    return ($self->{'srccontainermd5'});
+  } else {
+    tlwarn("TLPOBJ: MD5 sums are no longer supported, please adapt your code!\n");
+    return ("");
+  }
 }
 sub doccontainermd5 {
   my $self = shift;
   if (@_) { $self->{'doccontainermd5'} = shift }
-  return ( defined($self->{'doccontainermd5'}) ? $self->{'doccontainermd5'} : "" );
+  if (defined($self->{'doccontainermd5'})) {
+    return ($self->{'doccontainermd5'});
+  } else {
+    tlwarn("TLPOBJ: MD5 sums are no longer supported, please adapt your code!\n");
+    return ("");
+  }
 }
 sub containerchecksum {
   my $self = shift;
@@ -1245,9 +1322,7 @@ sub remove_srcfiles {
   $self->remove_files("src",@files);
 }
 sub docfiles {
-  my $self = shift;
-  if (@_) { $self->{'docfiles'} = [ @_ ] }
-  return @{ $self->{'docfiles'} };
+  _set_get_array_value(shift, "docfiles", @_);
 }
 sub clear_docfiles {
   my $self = shift;
@@ -1303,9 +1378,7 @@ sub remove_binfiles {
   $self->{'binfiles'}{$arch} = [ @finalfiles ];
 }
 sub runfiles {
-  my $self = shift;
-  if (@_) { $self->{'runfiles'} = [ @_ ] }
-  return @{ $self->{'runfiles'} };
+  _set_get_array_value(shift, "runfiles", @_);
 }
 sub clear_runfiles {
   my $self = shift;
@@ -1325,19 +1398,13 @@ sub remove_runfiles {
   $self->remove_files("run",@files);
 }
 sub depends {
-  my $self = shift;
-  if (@_) { $self->{'depends'} = [ @_ ] }
-  return @{ $self->{'depends'} };
+  _set_get_array_value(shift, "depends", @_);
 }
 sub executes {
-  my $self = shift;
-  if (@_) { $self->{'executes'} = [ @_ ] }
-  return @{ $self->{'executes'} };
+  _set_get_array_value(shift, "executes", @_);
 }
 sub postactions {
-  my $self = shift;
-  if (@_) { $self->{'postactions'} = [ @_ ] }
-  return @{ $self->{'postactions'} };
+  _set_get_array_value(shift, "postactions", @_);
 }
 sub containerdir {
   my @self = shift;
@@ -1558,6 +1625,10 @@ or the filehandle if given:
 =item C<writeout_simple>
 
 debugging function for comparison with C<tpm>/C<tlps>, will go away.
+
+=item C<as_json>
+
+returns the representation of the C<TLPOBJ> in JSON format.
 
 =item C<common_texmf_tree>
 
