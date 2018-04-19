@@ -13,7 +13,7 @@ depends=('texlive-core>=2016'
          'perl-term-shellui'
          'perl-term-readline-gnu'
          'perl-list-moreutils')
-source=("ftp://ftp.archlinux.org/other/texlive/$pkgname-$pkgver.tar.gz")
+source=("https://sources.archlinux.org/other/texlive/$pkgname-$pkgver.tar.gz")
 md5sums=('SKIP')
 
 package() {

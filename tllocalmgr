@@ -18,7 +18,7 @@ my $TEXMFVAR = "/var/lib/texmf";
 my $INSTALLEDPKGS = "$TEXMFVAR/arch/installedpkgs";
 
 our $VERSION = "0.5.1";
-our $YEAR = "2016";
+our $YEAR = "2018";
 my $CTANBASEURL="http://mirror.ctan.org/systems/texlive/tlnet";
 
 my $ROOT = "$ENV{HOME}/.texlive/texmf-var/arch";
