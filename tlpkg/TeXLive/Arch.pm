@@ -169,13 +169,13 @@ sub archpackages {
                  # Hyphen packages go to core.
                  push @{ $tlpackages{'core'} }, $d;
                  push @{ $tlpackages{"core-doc"} }, $d
-                 if ( $tlpdep->doccontainermd5 or $tlpdep->docsize );
+                 if ( $tlpdep->doccontainerchecksum or $tlpdep->docsize );
                  next;
             }
             push @{ $tlpackages{$coll} }, $d
             unless $d =~ /$SKIPPATTERN/;
             if (
-                ( $tlpdep->doccontainermd5
+                ( $tlpdep->doccontainerchecksum
                     or $tlpdep->docsize )
                 and $d !~ /$SKIPPATTERN/
             )
@@ -196,13 +196,13 @@ sub archpackages {
                  # Hyphen packages go to core.
                  push @{ $tlpackages{'core'} }, $d;
                  push @{ $tlpackages{"core-doc"} }, $d
-                 if ( $tlpdep->doccontainermd5 or $tlpdep->docsize );
+                 if ( $tlpdep->doccontainerchecksum or $tlpdep->docsize );
                  next;
             }
             push @{ $tlpackages{'langextra'} }, $d
             unless $d =~ /$SKIPPATTERN/;
             if (
-                ( $tlpdep->doccontainermd5
+                ( $tlpdep->doccontainerchecksum
                     or $tlpdep->docsize )
                 and $d !~ /$SKIPPATTERN/
                )
