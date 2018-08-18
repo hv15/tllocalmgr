@@ -17,7 +17,7 @@ die "You can't run this program as root\n" if $ENV{'USER'} eq "root";
 my $TEXMFVAR = "/var/lib/texmf";
 my $INSTALLEDPKGS = "$TEXMFVAR/arch/installedpkgs";
 
-our $VERSION = "0.5.1";
+our $VERSION = "0.7";
 our $YEAR = "2018";
 my $CTANBASEURL="http://mirror.ctan.org/systems/texlive/tlnet";
 
