@@ -247,6 +247,13 @@ sub archexecutes {
             my $tlpkg = $self->get_package($pkg);
             push @tmp, $tlpkg->executes if $tlpkg->executes;
         };
+        # tex and latex-bin have no runfiles but have format lines
+        if ( $coll eq "core" ) {
+            foreach my $pkg ( qw/tex latex-bin/ ) {
+                my $tlpkg = $self->get_package($pkg);
+                push @tmp, $tlpkg->executes if $tlpkg->executes;
+            };
+        }
         $executes{$coll} = [@tmp];
     }
 
