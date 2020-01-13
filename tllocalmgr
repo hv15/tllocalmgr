@@ -10,6 +10,7 @@ use Term::ShellUI;
 use Getopt::Long;
 use lib ('tlpkg', "/usr/share/texmf/arch/tlpkg");
 use TeXLive::Arch;
+use TeXLive::TLConfig;
 
 die "You can't run this program as root\n" if $ENV{'USER'} eq "root";
 
@@ -18,7 +19,7 @@ my $TEXMFVAR = "/var/lib/texmf";
 my $INSTALLEDPKGS = "$TEXMFVAR/arch/installedpkgs";
 
 our $VERSION = "0.7";
-our $YEAR = "2018";
+our $YEAR = $ReleaseYear;
 my $CTANBASEURL="http://mirror.ctan.org/systems/texlive/tlnet";
 
 my $ROOT = "$ENV{HOME}/.texlive/texmf-var/arch";
