@@ -1,4 +1,4 @@
-# $Id: TLTREE.pm 46745 2018-02-26 18:16:54Z karl $
+# $Id: TLTREE.pm 48520 2018-08-31 03:41:13Z preining $
 # TeXLive::TLTREE.pm - work with the tree of all files
 # Copyright 2007-2018 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
@@ -6,16 +6,9 @@
 
 package TeXLive::TLTREE;
 
-my $svnrev = '$Revision: 46745 $';
-my $_modulerevision;
-if ($svnrev =~ m/: ([0-9]+) /) {
-  $_modulerevision = $1;
-} else {
-  $_modulerevision = "unknown";
-}
-sub module_revision {
-  return $_modulerevision;
-}
+my $svnrev = '$Revision: 48520 $';
+my $_modulerevision = ($svnrev =~ m/: ([0-9]+) /) ? $1 : "unknown";
+sub module_revision { return $_modulerevision; }
 
 use TeXLive::TLUtils;
 
@@ -89,6 +82,7 @@ sub init_from_git {
   chomp(@foo);
 
   my $curcom = "";
+  my $rev = 0;
   for my $l (@foo) {
     if ($l eq "") {
       $curcom = "";
@@ -125,8 +119,11 @@ sub init_from_git {
   # now reverse the order
   for my $f (keys %files) {
     my $n = - ( $files{$f} - $rev ) + 1;
+    # special case for TL: remove Master if it is present
+    $f =~ s!^Master/!!;
     push @lines, "             $n $n dummy $f"
   }
+  # debug(join("\n", @lines));
   # TODO needs to be made better!
   $self->{'revision'} = $rev;
   $self->_initialize_lines(@lines);
@@ -326,13 +323,21 @@ of bin patterns for that arch).
 sub get_matching_files {
   my ($self, $type, $p, $pkg, $arch) = @_;
   my $ARCH = $arch;
-  my $PKGNAME = $pkg;
   my $newp;
-  eval "\$newp = \"$p\"";
-  if (!defined($newp)) {
-    print "Huuu: cannot generate newp from p: p=$p, pkg=$pkg, arch=$arch, type=$type\n";
+  {
+    my $warnstr = "";
+    local $SIG{__WARN__} = sub { $warnstr = $_[0]; };
+    eval "\$newp = \"$p\"";
+    if (!defined($newp)) {
+      die "cannot set newp from p: p=$p, pkg=$pkg, arch=$arch, type=$type";
+    }
+    if ($warnstr) {
+      tlwarn("Warning `$warnstr' while evaluating: $p "
+             . "(pkg=$pkg, arch=$arch, type=$type), returning empty list\n");
+      return ();
+    }
   }
-  return($self->_get_matching_files($type,$newp));
+  return $self->_get_matching_files($type,$newp);
 }
 
   
@@ -349,7 +354,7 @@ sub _get_matching_files {
   } elsif ($pattype eq "d") {
     @matchfiles = $self->files_under_path($patdata);
   } else {
-    die "Unknown pattern pattern type `$pattype' in $p";
+    die "Unknown pattern type `$pattype' in $p";
   }
   ddebug("p=$p; matchfiles=@matchfiles\n");
   return @matchfiles;

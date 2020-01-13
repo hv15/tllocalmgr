@@ -1,6 +1,6 @@
-# $Id: TLCrypto.pm 46745 2018-02-26 18:16:54Z karl $
-# TeXLive::TLcrypto.pm - handle checksums and signatures.
-# Copyright 2016-2018 Norbert Preining
+# $Id: TLCrypto.pm 52158 2019-09-23 18:04:33Z karl $
+# TeXLive::TLCrypto.pm - handle checksums and signatures.
+# Copyright 2016-2019 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
@@ -9,10 +9,10 @@ package TeXLive::TLCrypto;
 use Digest::MD5;
 
 use TeXLive::TLConfig;
-use TeXLive::TLUtils qw(debug ddebug win32 which platform conv_to_w32_path tlwarn tldie);
+use TeXLive::TLUtils qw(debug ddebug win32 which platform
+                        conv_to_w32_path tlwarn tldie);
 
-
-my $svnrev = '$Revision$';
+my $svnrev = '$Revision: 52158 $';
 my $_modulerevision = ($svnrev =~ m/: ([0-9]+) /) ? $1 : "unknown";
 sub module_revision { return $_modulerevision; }
 
@@ -57,15 +57,19 @@ BEGIN {
     %VerificationStatusDescription
     $VS_VERIFIED $VS_CHECKSUM_ERROR $VS_SIGNATURE_ERROR $VS_CONNECTION_ERROR
     $VS_UNSIGNED $VS_GPG_UNAVAILABLE $VS_PUBKEY_MISSING $VS_UNKNOWN
+    $VS_EXPKEYSIG $VS_REVKEYSIG
   );
   @EXPORT = qw(
     %VerificationStatusDescription
     $VS_VERIFIED $VS_CHECKSUM_ERROR $VS_SIGNATURE_ERROR $VS_CONNECTION_ERROR
     $VS_UNSIGNED $VS_GPG_UNAVAILABLE $VS_PUBKEY_MISSING $VS_UNKNOWN
+    $VS_EXPKEYSIG $VS_REVKEYSIG
   );
 }
 
 =pod
+
+=over 4
 
 =item C<< setup_checksum_method() >>
 
@@ -144,7 +148,9 @@ sub tlchecksum {
   if (!$::checksum_method) {
     setup_checksum_method();
   }
-  tldie("no checksum method available\n") if (!$::checksum_method);
+  tldie("TLCRYPTO::tlchecksum: no checksum method available\n")
+    if (!$::checksum_method);
+
   if (-r $file) {
     my ($out, $ret);
     if ($::checksum_method eq "openssl") {
@@ -163,10 +169,10 @@ sub tlchecksum {
       close(FILE);
       $ret = 0;
     } else {
-      tldie("unknown checksum program: $::checksum_method\n");
+      tldie("TLCRYPTO::tlchecksum: unknown checksum program: $::checksum_method\n");
     }
     if ($ret != 0) {
-      tlwarn("tlchecksum: cannot compute checksum: $file\n");
+      tlwarn("TLCRYPTO::tlchecksum: cannot compute checksum: $file\n");
       return "";
     }
     ddebug("tlchecksum: out = $out\n");
@@ -182,12 +188,13 @@ sub tlchecksum {
     }
     debug("tlchecksum($file): ===$cs===\n");
     if (length($cs) != 128) {
-      tlwarn("unexpected output from $::checksum_method: $out\n");
+      tlwarn("TLCRYPTO::tlchecksum: unexpected output from $::checksum_method:"
+             . " $out\n");
       return "";
     }
     return $cs;
   } else {
-    tlwarn("tlchecksum: given file not readable: $file\n");
+    tlwarn("TLCRYPTO::tlchecksum: given file not readable: $file\n");
     return "";
   }
 }
@@ -230,8 +237,10 @@ C<$VS_CONNECTION_ERROR> on connection error,
 C<$VS_UNSIGNED> on missing signature file, 
 C<$VS_GPG_UNAVAILABLE> if no gpg program is available,
 C<$VS_PUBKEY_MISSING> if the pubkey is not available, 
-C<$VS_CHECKSUM_ERROR> on checksum errors,and 
-C<$VS_SIGNATURE_ERROR> on signature errors.
+C<$VS_CHECKSUM_ERROR> on checksum errors, 
+C<$VS_EXPKEYSIG> if the signature is good but was made with an expired key,
+C<$VS_REVKEYSIG> if the signature is good but was made with a revoked key,
+and C<$VS_SIGNATURE_ERROR> on signature errors.
 In case of errors returns an informal message as second argument.
 
 =cut
@@ -250,6 +259,17 @@ sub verify_checksum {
     debug("verify_checksum: download did not succeed for $checksum_url\n");
     return($VS_CONNECTION_ERROR, "download did not succeed: $checksum_url");
   }
+
+  # check that we have a non-trivial size for the checksum file
+  # the size should be at least 128 + 1 + length(filename) > 129
+  {
+    my $css = -s $checksum_file;
+    if ($css <= 128) {
+      debug("verify_checksum: size of checksum file suspicious: $css\n");
+      return($VS_CONNECTION_ERROR, "download corrupted: $checksum_url");
+    }
+  }
+
   # check the signature
   my ($ret, $msg) = verify_signature($checksum_file, $checksum_url);
 
@@ -399,6 +419,8 @@ gpg signature in C<$url.asc>.
 
 Returns 
 $VS_VERIFIED on success, 
+$VS_REVKEYSIG on good signature but from revoked key,
+$VS_EXPKEYSIG on good signature but from expired key,
 $VS_UNSIGNED on missing signature file, 
 $VS_SIGNATURE_ERROR on signature error,
 $VS_GPG_UNAVAILABLE if no gpg is available, and 
@@ -416,22 +438,48 @@ sub verify_signature {
     my $signature_file
       = TeXLive::TLUtils::download_to_temp_or_file($signature_url);
     if ($signature_file) {
+      {
+        # we expect a signature to be at least
+        # 30 header line + 30 footer line + 256 > 300
+        my $sigsize = -s $signature_file;
+        if ($sigsize < 300) {
+          debug("cryptographic signature seems to be corrupted (size $sigsize<300): $signature_url, $signature_file\n");
+          return($VS_UNSIGNED, "cryptographic signature download seems to be corrupted (size $sigsize<300)");
+        }
+      }
+      # check also the first line of the signature file for
+      # -----BEGIN PGP SIGNATURE-----
+      {
+        open my $file, '<', $signature_file;
+        chomp(my $firstLine = <$file>);
+        close $file;
+        if ($firstLine !~ m/^-----BEGIN PGP SIGNATURE-----/) {
+          debug("cryptographic signature seems to be corrupted (first line not signature): $signature_url, $signature_file, $firstLine\n");
+          return($VS_UNSIGNED, "cryptographic signature download seems to be corrupted (first line of $signature_url not signature: $firstLine)");
+        }
+      }
       my ($ret, $out) = gpg_verify_signature($file, $signature_file);
-      if ($ret == 1) {
+      if ($ret == $VS_VERIFIED) {
         # no need to show the output
         debug("cryptographic signature of $url verified\n");
         return($VS_VERIFIED);
-      } elsif ($ret == -1) {
+      } elsif ($ret == $VS_PUBKEY_MISSING) {
         return($VS_PUBKEY_MISSING, $out);
+      } elsif ($ret == $VS_EXPKEYSIG) {
+        return($VS_EXPKEYSIG, $out);
+      } elsif ($ret == $VS_REVKEYSIG) {
+        return($VS_REVKEYSIG, $out);
       } else {
         return($VS_SIGNATURE_ERROR, <<GPGERROR);
 cryptographic signature verification of
   $file
 against
   $signature_url
-failed. Output was
+failed. Output was:
 $out
-Please report to texlive\@tug.org
+Please try from a different mirror and/or wait a few minutes
+and try again; usually this is because of transient updates.
+If problems persist, feel free to report to texlive\@tug.org.
 GPGERROR
       }
     } else {
@@ -468,19 +516,29 @@ sub gpg_verify_signature {
   close($status_fh);
   my ($out, $ret)
     = TeXLive::TLUtils::run_cmd("$::gpg --status-file \"$status_file\" --verify $sig_quote $file_quote 2>&1");
+  # read status file
+  open($status_fd, "<", $status_file) || die("Cannot open status file: $!");
+  my @status_lines = <$status_fd>;
+  close($status_fd);
+  chomp(@status_lines);
+  debug(join("\n", "STATUS OUTPUT", @status_lines));
   if ($ret == 0) {
-    debug("verification succeeded, output:\n$out\n");
-    return (1, $out);
-  } else {
-    open($status_fd, "<", $status_file) || die("Cannot open status file: $!");
-    while (<$status_fd>) {
-      if (m/^\[GNUPG:\] NO_PUBKEY (.*)/) {
-        close($status_fd);
-        debug("missing pubkey $1\n");
-        return (-1, "missing pubkey $1");
-      }
+    # verification still might return success but key is expired!
+    if (grep(/EXPKEYSIG/, @status_lines)) {
+      return($VS_EXPKEYSIG, "expired key");
     }
-    return (0, $out);
+    if (grep(/REVKEYSIG/, @status_lines)) {
+      return($VS_REVKEYSIG, "revoked key");
+    }
+    debug("verification succeeded, output:\n$out\n");
+    return ($VS_VERIFIED, $out);
+  } else {
+    if (grep(/^\[GNUPG:\] NO_PUBKEY (.*)/, @status_lines)) {
+      debug("missing pubkey $1\n");
+      return ($VS_PUBKEY_MISSING, "missing pubkey $1");
+    }
+    # we could do more checks on what is the actual problem here!
+    return ($VS_SIGNATURE_ERROR, $out);
   }
 }
 
@@ -499,6 +557,9 @@ our $VS_CONNECTION_ERROR = -1;
 our $VS_UNSIGNED = -2;
 our $VS_GPG_UNAVAILABLE = -3;
 our $VS_PUBKEY_MISSING = -4;
+our $VS_EXPKEYSIG = -5;
+our $VS_EXPSIG = -6;
+our $VS_REVKEYSIG = -7;
 our $VS_UNKNOWN = -100;
 
 our %VerificationStatusDescription = (
@@ -509,6 +570,8 @@ our %VerificationStatusDescription = (
   $VS_UNSIGNED         => 'unsigned',
   $VS_GPG_UNAVAILABLE  => 'gpg unavailable',
   $VS_PUBKEY_MISSING   => 'pubkey missing',
+  $VS_EXPKEYSIG        => 'valid signature with expired key',
+  $VS_EXPSIG           => 'valid but expired signature',
   $VS_UNKNOWN          => 'unknown',
 );
 

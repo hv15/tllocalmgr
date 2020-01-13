@@ -32,7 +32,6 @@ C<TeXLive::TLPDB> -- A database of TeX Live Packages
   $tlpdb->save;
   $tlpdb->media;
   $tlpdb->available_architectures();
-  $tlpdb->add_tlpcontainer($pkg, $ziploc [, $archrefs [, $dest ]] );
   $tlpdb->add_tlpobj($tlpobj);
   $tlpdb->needed_by($pkg);
   $tlpdb->remove_tlpobj($pkg);
@@ -80,6 +79,7 @@ C<TeXLive::TLPDB> -- A database of TeX Live Packages
   $tlpdb->is_virtual;
   $tlpdb->virtual_add_tlpdb($tlpdb, $tag);
   $tlpdb->virtual_remove_tlpdb($tag);
+  $tlpdb->virtual_get_tags();
   $tlpdb->virtual_get_tlpdb($tag);
   $tlpdb->virtual_get_package($pkg, $tag);
   $tlpdb->candidates($pkg);
@@ -91,13 +91,14 @@ C<TeXLive::TLPDB> -- A database of TeX Live Packages
 =cut
 
 use TeXLive::TLConfig qw($CategoriesRegexp $DefaultCategory $InfraLocation
-      $DatabaseName $MetaCategoriesRegexp $Archive
-      %TLPDBOptions %TLPDBSettings
+      $DatabaseName $DatabaseLocation $MetaCategoriesRegexp $Archive
+      $DefaultCompressorFormat %Compressors $CompressorExtRegexp
+      %TLPDBOptions %TLPDBSettings $ChecksumExtension
       $RelocPrefix $RelocTree);
 use TeXLive::TLCrypto;
 use TeXLive::TLPOBJ;
 use TeXLive::TLUtils qw(dirname mkdirhier member win32 info log debug ddebug
-                        tlwarn basename download_file merge_into tldie);
+                        tlwarn basename download_file merge_into tldie system_pipe);
 
 use Cwd 'abs_path';
 
@@ -113,10 +114,10 @@ my $_listdir;
 
 C<< TeXLive::TLPDB->new >> creates a new C<TLPDB> object. If the
 argument C<root> is given it will be initialized from the respective
-location starting at $path. If C<$path> begins with C<http://> or
-C<ftp://>, the program C<wget> is used to download the file.  The
-C<$path> can also start with C<file:/> in which case it is treated as a
-file on the filesystem in the usual way.
+location starting at $path. If C<$path> begins with C<http://>, C<https://>,
+C<ftp://>, C<scp://>, C<ssh://> or C<I<user>@I<host>:>, the respective file
+is downloaded.  The C<$path> can also start with C<file:/> in which case it
+is treated as a file on the filesystem in the usual way.
 
 Returns an object of type C<TeXLive::TLPDB>, or undef if the root was
 given but no package could be read from that location.
@@ -280,11 +281,19 @@ sub from_file {
   my $rootpath = $self->root;
   if ($rootpath =~ m,https?://|ftp://,) {
     $media = 'NET';
+  } elsif ($rootpath =~ m,$TeXLive::TLUtils::SshURIRegex,) {
+    $media = 'NET';
   } else {
     if ($rootpath =~ m,file://*(.*)$,) {
       $rootpath = "/$1";
     }
-    if (-d "$rootpath/texmf-dist/web2c") {
+    if ($params{'media'}) {
+      $media = $params{'media'};
+    } elsif (! -d $rootpath) {
+      # no point in going on if we don't even have a directory.
+      tlwarn("TLPDB: not a directory, not loading: $rootpath\n");
+      return 0;
+    } elsif (-d "$rootpath/texmf-dist/web2c") {
       $media = 'local_uncompressed';
     } elsif (-d "$rootpath/texmf/web2c") { # older
       $media = 'local_uncompressed';
@@ -296,14 +305,14 @@ sub from_file {
       $media = 'local_compressed';
     } else {
       # we cannot find the right type, return zero, hope people notice
-      tlwarn("Cannot determine type of tlpdb from $rootpath!\n");
+      tlwarn("TLPDB: Cannot determine type of tlpdb from $rootpath!\n");
       return 0;
     }
   }
   $self->{'media'} = $media;
   #
   # actually load the TLPDB
-  if ($path =~ m;^((https?|ftp)://|file:\/\/*);) {
+  if ($path =~ m;^((https?|ftp)://|file:\/\/*); || $path =~ m;$TeXLive::TLUtils::SshURIRegex;) {
     debug("TLPDB.pm: trying to initialize from $path\n");
     # now $xzfh filehandle is open, the file created
     # TLUtils::download_file will just overwrite what is there
@@ -313,54 +322,47 @@ sub from_file {
     ($tlpdbfh, $tlpdbfile) = TeXLive::TLUtils::tl_tmpfile();
     # same as above
     close($tlpdbfh);
-    my $tlpdbfile_quote = $tlpdbfile;
-    if (win32()) {
-      $tlpdbfile =~ s!/!\\!g;
-    }
-    $tlpdbfile_quote = "\"$tlpdbfile\"";
-    # if we have xzdec available we try the xz file
+    # if we have xz available we try the xz file
     my $xz_succeeded = 0 ;
-    if (defined($::progs{'xzdec'})) {
+    my $compressorextension = "<UNSET>";
+    if (defined($::progs{$DefaultCompressorFormat})) {
       # we first try the xz compressed file
       my ($xzfh, $xzfile) = TeXLive::TLUtils::tl_tmpfile();
       close($xzfh);
-      my $xzfile_quote = $xzfile;
-      if (win32()) {
-        $xzfile  =~ s!/!\\!g;
-      }
-      $xzfile_quote = "\"$xzfile\"";
-      my $xzdec = TeXLive::TLUtils::quotify_path_with_spaces($::progs{'xzdec'});
-      debug("trying to download $path.xz to $xzfile\n");
-      my $ret = TeXLive::TLUtils::download_file("$path.xz", "$xzfile");
+      my $decompressor = $::progs{$DefaultCompressorFormat};
+      $compressorextension = $Compressors{$DefaultCompressorFormat}{'extension'};
+      my @decompressorArgs = @{$Compressors{$DefaultCompressorFormat}{'decompress_args'}};
+      debug("trying to download $path.$compressorextension to $xzfile\n");
+      my $ret = TeXLive::TLUtils::download_file("$path.$compressorextension", "$xzfile");
       # better to check both, the return value AND the existence of the file
       if ($ret && (-r "$xzfile")) {
         # ok, let the fun begin
-        debug("xzdec-ing $xzfile to $tlpdbfile\n");
-        # xzdec *hopefully* returns 0 on success and anything else on failure
+        debug("decompressing $xzfile to $tlpdbfile\n");
+        # xz *hopefully* returns 0 on success and anything else on failure
         # we don't have to negate since not zero means error in the shell
         # and thus in perl true
-        if (system("$xzdec <$xzfile_quote >$tlpdbfile_quote")) {
-          debug("$xzdec $xzfile failed, trying plain file\n");
-          # to be sure we unlink the xz file and the tlpdbfile
-          unlink($xzfile);
+        if (!system_pipe($decompressor, $xzfile, $tlpdbfile, 1, @decompressorArgs)) {
+          debug("$decompressor $xzfile failed, trying plain file\n");
+          unlink($xzfile); # the above command only removes in case of success
         } else {
-          unlink($xzfile);
           $xz_succeeded = 1;
-          debug("found the uncompressed xz file\n");
+          debug("found the uncompressed $DefaultCompressorFormat file\n");
         }
       } 
     } else {
-      debug("no xzdec defined, not trying tlpdb.xz ...\n");
+      debug("no $DefaultCompressorFormat defined ...\n");
     }
     if (!$xz_succeeded) {
-      debug("TLPDB: downloading $path.xz didn't succeed, try $path\n");
+      debug("TLPDB: downloading $path.$compressorextension didn't succeed, try $path\n");
       my $ret = TeXLive::TLUtils::download_file($path, $tlpdbfile);
       # better to check both, the return value AND the existence of the file
-      if ($ret && (-r "$tlpdbfile")) {
+      if ($ret && (-r $tlpdbfile)) {
         # do nothing
       } else {
         unlink($tlpdbfile);
-        die "$0: open tlpdb($path) failed: $!";
+        tldie(  "$0: TLPDB::from_file could not initialize from: $path\n"
+              . "$0: Maybe the repository setting should be changed.\n"
+              . "$0: More info: https://tug.org/texlive/acquire.html\n");
       }
     }
     # if we are still here, then either the xz version was downloaded
@@ -369,7 +371,7 @@ sub from_file {
     #
     # before we open and proceed, verify the downloaded file
     if ($params{'verify'} && $media ne 'local_uncompressed') {
-      my ($r, $m) = TeXLive::TLCrypto::verify_checksum($tlpdbfile, "$path.$TeXLive::TLConfig::ChecksumExtension");
+      my ($r, $m) = TeXLive::TLCrypto::verify_checksum($tlpdbfile, "$path.$ChecksumExtension");
       if ($r == $VS_CHECKSUM_ERROR) {
         tldie("$0: checksum error when downloading $tlpdbfile from $path: $m\n");
       } elsif ($r == $VS_SIGNATURE_ERROR) {
@@ -377,7 +379,7 @@ sub from_file {
       } elsif ($r == $VS_CONNECTION_ERROR) {
         tldie("$0: cannot download: $m\n");
       } elsif ($r == $VS_UNSIGNED) {
-        debug("$0: remote database checksum is not signed, continuing anyway!\n");
+        debug("$0: remote database checksum is not signed, continuing anyway: $m\n");
         $self->verification_status($r);
       } elsif ($r == $VS_GPG_UNAVAILABLE) {
         debug("$0: TLPDB: no gpg available, continuing anyway!\n");
@@ -395,7 +397,7 @@ sub from_file {
     open($retfh, "<$tlpdbfile") || die "$0: open($tlpdbfile) failed: $!";
   } else {
     if ($params{'verify'} && $media ne 'local_uncompressed') {
-      my ($r, $m) = TeXLive::TLCrypto::verify_checksum($path, "$path.$TeXLive::TLConfig::ChecksumExtension");
+      my ($r, $m) = TeXLive::TLCrypto::verify_checksum($path, "$path.$ChecksumExtension");
       if ($r == $VS_CHECKSUM_ERROR) {
         tldie("$0: checksum error when downloading $path from $path: $m\n");
       } elsif ($r == $VS_SIGNATURE_ERROR) {
@@ -410,6 +412,9 @@ sub from_file {
         $self->verification_status($r);
       } elsif ($r == $VS_PUBKEY_MISSING) {
         debug("$0: TLPDB: pubkey missing, continuing anyway!\n");
+        $self->verification_status($r);
+      } elsif ($r == $VS_EXPKEYSIG) {
+        debug("$0: TLPDB: signature verified, but key expired, continuing anyway!\n");
         $self->verification_status($r);
       } elsif ($r == $VS_VERIFIED) {
         $is_verified = 1;
@@ -502,33 +507,33 @@ sub options_as_json {
   die("calling _as_json on virtual is not supported!") if ($self->is_virtual);
   my $opts = $self->options;
   my @opts;
-  for my $k (keys %TeXLive::TLConfig::TLPDBOptions) {
+  for my $k (keys %TLPDBOptions) {
     my %foo;
     $foo{'name'} = $k;
-    $foo{'tlmgrname'} = $TeXLive::TLConfig::TLPDBOptions{$k}[2];
-    $foo{'description'} = $TeXLive::TLConfig::TLPDBOptions{$k}[3];
-    $foo{'format'} = $TeXLive::TLConfig::TLPDBOptions{$k}[0];
-    $foo{'default'} = "$TeXLive::TLConfig::TLPDBOptions{$k}[1]";
-    # if ($TeXLive::TLConfig::TLPDBOptions{$k}[0] =~ m/^n/) {
+    $foo{'tlmgrname'} = $TLPDBOptions{$k}[2];
+    $foo{'description'} = $TLPDBOptions{$k}[3];
+    $foo{'format'} = $TLPDBOptions{$k}[0];
+    $foo{'default'} = "$TLPDBOptions{$k}[1]";
+    # if ($TLPDBOptions{$k}[0] =~ m/^n/) {
     #   if (exists($opts->{$k})) {
     #     $foo{'value'} = $opts->{$k};
     #     $foo{'value'} += 0;
     #   }
     #   $foo{'default'} += 0;
-    # } elsif ($TeXLive::TLConfig::TLPDBOptions{$k}[0] eq "b") {
+    # } elsif ($TLPDBOptions{$k}[0] eq "b") {
     #   if (exists($opts->{$k})) {
     #     $foo{'value'} = ($opts->{$k} ? TeXLive::TLUtils::True() : TeXLive::TLUtils::False());
     #   }
     #   $foo{'default'} = ($foo{'default'} ? TeXLive::TLUtils::True() : TeXLive::TLUtils::False());
     # } elsif ($k eq "location") {
     #   my %def;
-    #   $def{'main'} = $TeXLive::TLConfig::TLPDBOptions{$k}[1];
+    #   $def{'main'} = $TLPDBOptions{$k}[1];
     #   $foo{'default'} = \%def;
     #   if (exists($opts->{$k})) {
     #     my %repos = TeXLive::TLUtils::repository_to_array($opts->{$k});
     #     $foo{'value'} = \%repos;
     #   }
-    # } elsif ($TeXLive::TLConfig::TLPDBOptions{$k}[0] eq "p") {
+    # } elsif ($TLPDBOptions{$k}[0] eq "p") {
     #   # strings/path
     #   if (exists($opts->{$k})) {
     #     $foo{'value'} = $opts->{$k};
@@ -551,16 +556,16 @@ sub settings_as_json {
   die("calling _as_json on virtual is not supported!") if ($self->is_virtual);
   my $sets = $self->settings;
   my @json;
-  for my $k (keys %TeXLive::TLConfig::TLPDBSettings) {
+  for my $k (keys %TLPDBSettings) {
     my %foo;
     $foo{'name'} = $k;
-    $foo{'type'} = $TeXLive::TLConfig::TLPDBSettings{$k}[0];
-    $foo{'description'} = $TeXLive::TLConfig::TLPDBSettings{$k}[1];
-    # if ($TeXLive::TLConfig::TLPDBSettings{$k}[0] eq "b") {
+    $foo{'type'} = $TLPDBSettings{$k}[0];
+    $foo{'description'} = $TLPDBSettings{$k}[1];
+    # if ($TLPDBSettings{$k}[0] eq "b") {
     #   if (exists($sets->{$k})) {
     #     $foo{'value'} = ($sets->{$k} ? TeXLive::TLUtils::True() : TeXLive::TLUtils::False());
     #   }
-    # } elsif ($TeXLive::TLConfig::TLPDBSettings{$k} eq "available_architectures") {
+    # } elsif ($TLPDBSettings{$k} eq "available_architectures") {
     #   if (exists($sets->{$k})) {
     #     my @lof = $self->available_architectures;
     #     $foo{'value'} = \@lof;
@@ -629,9 +634,11 @@ sub save {
   open(FOO, ">$tmppath") || die "$0: open(>$tmppath) failed: $!";
   $self->writeout(\*FOO);
   close(FOO);
+  # on Windows the renaming sometimes fails, try to copy and unlink the
+  # .tmp file. This we do for all archs, cannot hurt.
   # if we managed that one, we move it over
-  die ("rename $tmppath to $path failed: $!")
-    unless rename($tmppath, $path);
+  TeXLive::TLUtils::copy ("-f", $tmppath, $path);
+  unlink ($tmppath) or tlwarn ("TLPDB: cannot unlink $tmppath: $!\n");
 }
 
 =pod
@@ -686,82 +693,6 @@ sub _available_architectures {
 
 =pod
 
-=item C<< $tlpdb->add_tlpcontainer($pkg, $ziploc [, $archrefs [, $dest ]] ) >>
-
-Installs the package C<$pkg> from the container files in C<$ziploc>. If
-C<$archrefs> is given then it must be a reference to a list of 
-architectures to be installed. If the normal (arch=all) package is
-architecture dependent then all arch packages in this list are installed.
-If C<$dest> is given then the files are
-installed into it, otherwise into the location of the TLPDB.
-
-Note that this procedure does NOT check for dependencies. So if your package
-adds new dependencies they are not necessarily fulfilled.
-
-=cut
-
-sub add_tlpcontainer {
-  my ($self, $package, $ziplocation, $archrefs, $dest) = @_;
-  if ($self->is_virtual) {
-    tlwarn("TLPDB: cannot add_tlpcontainer to a virtual tlpdb\n");
-    return 0;
-  }
-  my @archs;
-  if (defined($archrefs)) {
-    @archs = @$archrefs;
-  }
-  my $cwd = getcwd();
-  if ($ziplocation !~ m,^/,) {
-    $ziplocation = "$cwd/$ziplocation";
-  }
-  my $tlpobj = $self->_add_tlpcontainer($package, $ziplocation, "all", $dest);
-  if ($tlpobj->is_arch_dependent) {
-    foreach (@$archrefs) {
-      $self->_add_tlpcontainer($package, $ziplocation, $_, $dest);
-    }
-  }
-}
-
-sub _add_tlpcontainer {
-  my ($self, $package, $ziplocation, $arch, $dest) = @_;
-  my $unpackprog;
-  my $args;
-  # WARNING: If you change the location of the texlive.tlpdb this
-  # has to be changed, too!!
-  if (not(defined($dest))) { 
-    $dest = $self->{'root'};
-  }
-  my $container = "$ziplocation/$package";
-  if ($arch ne "all") {
-    $container .= ".$arch";
-  }
-  if (-r "$container.zip") {
-    $container .= ".zip";
-    $unpackprog="unzip";
-    $args="-o -qq $container -d $dest";
-  } elsif (-r "$container.xz") {
-    $container .= ".xz";
-    $unpackprog="NO_IDEA_HOW_TO_UNPACK_LZMA";
-    $args="NO IDEA WHAT ARGS IT NEEDS";
-    die "$0: xz checked for but not implemented, maybe update TLPDB.pm";
-  } else {
-    die "$0: No package $container (.zip or .xz) in $ziplocation";
-  }
-  tlwarn("TLPDB: Hmmm, this needs testing and error checking!\n");
-  tlwarn("Should we use -a -- adapt line endings etc?\n");
-  `$unpackprog $args`;
-  # we only create/add tlpobj for arch eq "all"
-  if ($arch eq "all") {
-    my $tlpobj = new TeXLive::TLPOBJ;
-    $tlpobj->from_file("$dest/$TeXLive::TLConfig::InfraLocation/tlpobj/$package.tlpobj");
-    $self->add_tlpobj($tlpobj);
-    return $tlpobj;
-  }
-}
-
-
-=pod
-
 =item C<< $tlpdb->get_package("pkgname") >> 
 
 The C<get_package> function returns a reference to the C<TLPOBJ> object
@@ -805,7 +736,7 @@ sub _get_package {
 
 =pod
 
-=item C<< $tlpdb->media_of_package($pkg [, $tag]);
+=item C<< $tlpdb->media_of_package($pkg [, $tag]) >>
 
 returns the media type of the package. In the virtual case a tag can
 be given and the media of that repository is used, otherwise the
@@ -875,7 +806,7 @@ sub list_packages {
     }
     # we have to be careful here: If a package
     # is only present in a subsidiary repository
-    # and the package is *not* explicitely
+    # and the package is *not* explicitly
     # pinned to it, it will not be installable.
     # This is what we want. But in this case
     # we don't want it to be listed by default.
@@ -940,6 +871,7 @@ sub expand_dependencies {
   my %install = ();
   my @archs = $totlpdb->available_architectures;
   for my $p (@_) {
+    next if ($p =~ m/^\s*$/);
     my ($pp, $aa) = split('@', $p);
     $install{$pp} = (defined($aa) ? $aa : 0);;
   }
@@ -952,7 +884,7 @@ sub expand_dependencies {
       next if ($p =~ m/^00texlive/);
       my $pkg = $self->get_package($p, ($install{$p}?$install{$p}:undef));
       if (!defined($pkg)) {
-        debug("W: $p is mentioned somewhere but not available, disabling\n");
+        ddebug("W: $p is mentioned somewhere but not available, disabling\n");
         $install{$p} = 0;
         next;
       }
@@ -1146,7 +1078,7 @@ sub _generate_listfile {
         push @lop, $d;
       }
     } else {
-      # speudo dependencies on $Package.ARCH can be ignored
+      # pseudo-dependencies on $Package.ARCH can be ignored
       if ($d !~ m/\.ARCH$/) {
         tlwarn("TLPDB: package $tlp->name depends on $d, but this does not exist\n");
       }
@@ -1180,7 +1112,7 @@ sub _generate_listfile {
     print TMP "*Title: ", $tlp->shortdesc, "\n";
     my $s = 0;
     # schemes size includes ONLY those packages which are directly
-    # included and direclty included files, not the size of the
+    # included and directly included files, not the size of the
     # included collections. But if a package is included in one of
     # the called for collections AND listed directly, we don't want
     # to count its size two times
@@ -1340,7 +1272,7 @@ sub verification_status {
 =item C<< $tlpdb->listdir >>
 
 The function C<listdir> allows to read and set the packages variable
-specifiying where generated list files are created.
+specifying where generated list files are created.
 
 =cut
 
@@ -1354,7 +1286,7 @@ sub listdir {
 
 =item C<< $tlpdb->config_src_container >>
 
-Returns 1 if the the texlive config option for src files splitting on 
+Returns 1 if the texlive config option for src files splitting on 
 container level is set. See Options below.
 
 =cut
@@ -1381,7 +1313,7 @@ sub config_src_container {
 
 =item C<< $tlpdb->config_doc_container >>
 
-Returns 1 if the the texlive config option for doc files splitting on 
+Returns 1 if the texlive config option for doc files splitting on 
 container level is set. See Options below.
 
 =cut
@@ -1756,7 +1688,7 @@ sub install_package_files {
     if ($opt_doc) { foreach ($tlpobj->docfiles) { push @installfiles, $_; } }
     # 
     # remove the RELOC prefix, but do NOT replace it with RelocTree
-    @installfiles = map { s!^$TeXLive::TLConfig::RelocPrefix/!!; $_; } @installfiles;
+    @installfiles = map { s!^$RelocPrefix/!!; $_; } @installfiles;
     # if the first argument of _install_data is scalar, it is the
     # place from where files should be installed
     if (!_install_data ($tmpdir, \@installfiles, $reloc, \@installfiles, $self)) {
@@ -1888,19 +1820,30 @@ sub not_virtual_install_package {
     if ($media eq 'local_uncompressed') {
       $container = \@installfiles;
     } elsif ($media eq 'local_compressed') {
-      if (-r "$root/$Archive/$pkg.tar.xz") {
-        $container = "$root/$Archive/$pkg.tar.xz";
-      } else {
-        tlwarn("TLPDB: cannot find package $pkg.tar.xz) in $root/$Archive\n");
-        next;
+      for my $ext (map { $Compressors{$_}{'extension'} } keys %Compressors) {
+        if (-r "$root/$Archive/$pkg.tar.$ext") {
+          $container = "$root/$Archive/$pkg.tar.$ext";
+        }
+      }
+      if (!$container) {
+        tlwarn("TLPDB: cannot find package $pkg.tar.$CompressorExtRegexp"
+               . " in $root/$Archive\n");
+        return(0);
       }
     } elsif (&media eq 'NET') {
-      $container = "$root/$Archive/$pkg.$TeXLive::TLConfig::DefaultContainerExtension";
+      $container = "$root/$Archive/$pkg.tar."
+                   . $Compressors{$DefaultCompressorFormat}{'extension'};
     }
-    $self->_install_data ($container, $reloc, \@installfiles, $totlpdb, $tlpobj->containersize, $tlpobj->containerchecksum)
+    my $container_str = ref $container eq "ARRAY"
+                        ? "[" . join (" ", @$container) . "]" : $container;
+    ddebug("TLPDB::not_virtual_install_package: installing container: ",
+          $container_str, "\n");
+    $self->_install_data($container, $reloc, \@installfiles, $totlpdb,
+                         $tlpobj->containersize, $tlpobj->containerchecksum)
       || return(0);
-    # if we are installing from local_compressed or NET we have to fetch the respective
-    # source and doc packages $pkg.source and $pkg.doc and install them, too
+    # if we are installing from local_compressed or NET we have to fetch
+    # respective source and doc packages $pkg.source and $pkg.doc and
+    # install them, too
     if (($media eq 'NET') || ($media eq 'local_compressed')) {
       # we install split containers under the following conditions:
       # - the container were split generated
@@ -1915,14 +1858,16 @@ sub not_virtual_install_package {
       # - there are actually src/doc files present
       if ($container_src_split && $opt_src && $tlpobj->srcfiles) {
         my $srccontainer = $container;
-        $srccontainer =~ s/(\.tar\.xz|\.zip)$/.source$1/;
-        $self->_install_data ($srccontainer, $reloc, \@installfiles, $totlpdb, $tlpobj->srccontainersize, $tlpobj->srccontainerchecksum)
+        $srccontainer =~ s/\.tar\.$CompressorExtRegexp$/.source.tar.$1/;
+        $self->_install_data($srccontainer, $reloc, \@installfiles, $totlpdb,
+                      $tlpobj->srccontainersize, $tlpobj->srccontainerchecksum)
           || return(0);
       }
       if ($container_doc_split && $real_opt_doc && $tlpobj->docfiles) {
         my $doccontainer = $container;
-        $doccontainer =~ s/(\.tar\.xz|\.zip)$/.doc$1/;
-        $self->_install_data ($doccontainer, $reloc, \@installfiles, $totlpdb, $tlpobj->doccontainersize, $tlpobj->doccontainerchecksum)
+        $doccontainer =~ s/\.tar\.$CompressorExtRegexp$/.doc.tar.$1/;
+        $self->_install_data($doccontainer, $reloc, \@installfiles,
+            $totlpdb, $tlpobj->doccontainersize, $tlpobj->doccontainerchecksum)
           || return(0);
       }
       #
@@ -1931,8 +1876,8 @@ sub not_virtual_install_package {
       # in USER MODE that should NOT be done because we keep the information
       # there, but for now do it unconditionally
       if ($tlpobj->relocated) {
-        my $reloctree = $totlpdb->root . "/" . $TeXLive::TLConfig::RelocTree;
-        my $tlpkgdir = $reloctree . "/" . $TeXLive::TLConfig::InfraLocation;
+        my $reloctree = $totlpdb->root . "/" . $RelocTree;
+        my $tlpkgdir = $reloctree . "/" . $InfraLocation;
         my $tlpod = $tlpkgdir .  "/tlpobj";
         TeXLive::TLUtils::rmtree($tlpod) if (-d $tlpod);
         # we try to remove the tlpkg directory, that will succeed only
@@ -2014,14 +1959,6 @@ sub _install_data {
 
   my @filelist = @$filelistref;
 
-  # we assume that $::progs has been set up!
-  my $wget = $::progs{'wget'};
-  my $xzdec = TeXLive::TLUtils::quotify_path_with_spaces($::progs{'xzdec'});
-  if (!defined($wget) || !defined($xzdec)) {
-    tlwarn("TLPDB::_install_data: programs not set up properly; hmm.\n");
-    return(0);
-  }
-
   if (ref $what) {
     # determine the root from where we install
     # if the first argument $self is a string, then it should be the
@@ -2036,7 +1973,7 @@ sub _install_data {
     # if we are installing a reloc, add the RelocTree to the target
     if ($reloc) {
       if (!$totlpdb->setting("usertree")) {
-        $target .= "/$TeXLive::TLConfig::RelocTree";
+        $target .= "/$RelocTree";
       }
     }
 
@@ -2049,10 +1986,10 @@ sub _install_data {
     }
     # we always assume that copy will work
     return(1);
-  } elsif ($what =~ m,\.tar\.xz$,) {
+  } elsif ($what =~ m,\.tar\.$CompressorExtRegexp$,) {
     if ($reloc) {
       if (!$totlpdb->setting("usertree")) {
-        $target .= "/$TeXLive::TLConfig::RelocTree";
+        $target .= "/$RelocTree";
       }
     }
     my $ww = ($whatsize || "<unset>");
@@ -2148,7 +2085,7 @@ sub remove_package {
           } else {
             # NO NOTHING HERE!!!
             # DON'T PUSH IT ON @goodfiles, it will be removed, which we do
-            # NOT want. We only want to supress the warning!
+            # NOT want. We only want to suppress the warning!
             push @debugfiles, $f;
           }
         } else {
@@ -2420,17 +2357,17 @@ sub setting {
 
 sub reset_options {
   my $self = shift;
-  for my $k (keys %TeXLive::TLConfig::TLPDBOptions) {
-    $self->option($k, $TeXLive::TLConfig::TLPDBOptions{$k}->[1]);
+  for my $k (keys %TLPDBOptions) {
+    $self->option($k, $TLPDBOptions{$k}->[1]);
   }
 }
 
 sub add_default_options {
   my $self = shift;
-  for my $k (sort keys %TeXLive::TLConfig::TLPDBOptions) {
+  for my $k (sort keys %TLPDBOptions) {
     # if the option is not set already, do set it to defaults
     if (! $self->option($k) ) {
-      $self->option($k, $TeXLive::TLConfig::TLPDBOptions{$k}->[1]);
+      $self->option($k, $TLPDBOptions{$k}->[1]);
     }
   }
 }
@@ -2607,7 +2544,9 @@ The purpose of virtual databases is to collect several data sources
 and present them in one way. The normal functions will always return
 the best candidate for the set of functions.
 
-More docs to be written
+More docs to be written someday, maybe.
+
+=over 4
 
 =cut
 
@@ -2636,6 +2575,11 @@ sub make_virtual {
     $self->{'virtual'} = 1;
   }
   return 1;
+}
+
+sub virtual_get_tags {
+  my $self = shift;
+  return keys %{$self->{'tlpdbs'}};
 }
 
 sub virtual_get_tlpdb {
@@ -2842,7 +2786,7 @@ sub virtual_pinning {
 # means that:
 # for package "foo" the revision numbers of "foo" in the repos "repo1",
 # "repo2", and "main" are numerically compared and biggest number wins.
-# for all other packages of "repo1" and "repo2", other other repositories
+# for all other packages of "repo1" and "repo2", other repositories
 # are not considered.
 #
 # NOT IMPLEMENTED YET!!!
@@ -2887,6 +2831,21 @@ sub check_evaluate_pinning {
   # the default main:* is always considered to be matched
   $mainpin->{'hit'} = 1;
   push @pins, $mainpin;
+  # # sort pins so that we first check specific lines without occurrences of
+  # # special characters, and then those with special characters.
+  # # The definitions are based on glob style rules, saved in $pp->{'glob'}
+  # # so we simply check whether there is * or ? in the string
+  # @pins = sort {
+  #   my $ag = $a->{'glob'};
+  #   my $bg = $b->{'glob'};
+  #   my $cAs = () = $ag =~ /\*/g; # number of * in glob of $a
+  #   my $cBs = () = $bg =~ /\*/g; # number of * in glob of $b
+  #   my $cAq = () = $ag =~ /\?/g; # number of ? in glob of $a
+  #   my $cBq = () = $bg =~ /\?/g; # number of ? in glob of $b
+  #   my $aVal = 2 * $cAs + $cAq;
+  #   my $bVal = 2 * $cBs + $cBq;
+  #   $aVal <=> $bVal
+  # } @pins;
   for my $pkg (keys %pkgs) {
     PINS: for my $pp (@pins) {
       my $pre = $pp->{'re'};
@@ -2900,8 +2859,16 @@ sub check_evaluate_pinning {
     }
   }
   # check that all pinning lines where hit
+  # If a repository has a catch-all pin
+  #   foo:*
+  # then we do not warn about any other pin (foo:abcde) not being hit.
+  my %catchall;
+  for my $p (@pins) {
+    $catchall{$p->{'repo'}} = 1 if ($p->{'glob'} eq "*");
+  }
   for my $p (@pins) {
     next if defined($p->{'hit'});
+    next if defined($catchall{$p->{'repo'}});
     tlwarn("tlmgr (TLPDB): pinning warning: the package pattern ",
            $p->{'glob'}, " on the line:\n  ", $p->{'line'},
            "\n  does not match any package\n");
@@ -2985,6 +2952,8 @@ sub match_glob {
 }
 
 =pod
+
+=back
 
 =head1 OPTIONS
 

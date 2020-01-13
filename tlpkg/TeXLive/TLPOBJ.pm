@@ -1,17 +1,18 @@
-# $Id: TLPOBJ.pm 46745 2018-02-26 18:16:54Z karl $
+# $Id: TLPOBJ.pm 53204 2019-12-21 23:18:19Z karl $
 # TeXLive::TLPOBJ.pm - module for using tlpobj files
-# Copyright 2007-2018 Norbert Preining
+# Copyright 2007-2019 Norbert Preining
 # This file is licensed under the GNU General Public License version 2
 # or any later version.
 
 package TeXLive::TLPOBJ;
 
-my $svnrev = '$Revision: 46745 $';
+my $svnrev = '$Revision: 53204 $';
 my $_modulerevision = ($svnrev =~ m/: ([0-9]+) /) ? $1 : "unknown";
 sub module_revision { return $_modulerevision; }
 
 use TeXLive::TLConfig qw($DefaultCategory $CategoriesRegexp 
                          $MetaCategoriesRegexp $InfraLocation 
+                         %Compressors $DefaultCompressorFormat
                          $RelocPrefix $RelocTree);
 use TeXLive::TLCrypto;
 use TeXLive::TLTREE;
@@ -118,16 +119,17 @@ sub from_fh {
           # do manual parsing
           # this is not optimal, but since we support only two tags there
           # are not so many cases
-          if ($rest =~ m/^details="(.*)"\s*$/) {
-            $self->{'docfiledata'}{$f}{'details'} = $1;
-          } elsif ($rest =~ m/^language="(.*)"\s*$/) {
-            $self->{'docfiledata'}{$f}{'language'} = $1;
-          } elsif ($rest =~ m/^language="(.*)"\s+details="(.*)"\s*$/) {
+          # Warning: need tp check the double cases first!!!
+          if ($rest =~ m/^language="(.*)"\s+details="(.*)"\s*$/) {
             $self->{'docfiledata'}{$f}{'details'} = $2;
             $self->{'docfiledata'}{$f}{'language'} = $1;
           } elsif ($rest =~ m/^details="(.*)"\s+language="(.*)"\s*$/) {
             $self->{'docfiledata'}{$f}{'details'} = $1;
             $self->{'docfiledata'}{$f}{'language'} = $2;
+          } elsif ($rest =~ m/^details="(.*)"\s*$/) {
+            $self->{'docfiledata'}{$f}{'details'} = $1;
+          } elsif ($rest =~ m/^language="(.*)"\s*$/) {
+            $self->{'docfiledata'}{$f}{'language'} = $1;
           } else {
             tlwarn("$0: Unparsable tagging in TLPDB line: $line\n");
           }
@@ -261,7 +263,7 @@ sub _recompute_size {
           $nrivblocks += int($s/$TeXLive::TLConfig::BlockSize);
           $nrivblocks++ if (($s%$TeXLive::TLConfig::BlockSize) > 0);
         } else {
-          printf STDERR "size for $f not defined, strange ...\n";
+        tlwarn("$0: (TLPOBJ::_recompute_size) size of $type $f undefined?!\n");
         }
       }
     }
@@ -368,6 +370,7 @@ sub writeout {
   }
   # writeout all the catalogue keys
   foreach my $k (sort keys %{$self->cataloguedata}) {
+    next if $k eq "date";
     print $fd "catalogue-$k ", $self->cataloguedata->{$k}, "\n";
   }
 }
@@ -456,8 +459,8 @@ sub as_json {
     my %newd;
     $newd{'file'} = $f;
     if (defined($dfd->{$f})) {
-      # TODO should we check that there are actually only "details"
-      # and "language" as key?
+      # "details" and "language" keys now, but more could be added any time.
+      # (Such new keys would have to be added in update_from_catalogue.)
       for my $k (keys %{$dfd->{$f}}) {
         $newd{$k} = $dfd->{$f}->{$k};
       }
@@ -507,7 +510,7 @@ sub replace_reloc_prefix {
   }
   $self->docfiledata(%newdata);
   # if there are bin files they have definitely NOT the
-  # texmf-dist prefix, so we cannot cancel it anyway
+  # texmf-dist prefix, so no reloc to replace
 }
 
 sub cancel_common_texmf_tree {
@@ -557,10 +560,19 @@ sub common_texmf_tree {
 
 
 sub make_container {
-  my ($self,$type,$instroot,$destdir,$containername,$relative) = @_;
-  if (($type ne "xz") && ($type ne "tar")) {
-    die "$0: TLPOBJ supports tar and xz containers, not $type";
+  my ($self, $type, $instroot, %other) = @_;
+  my $destdir = ($other{'destdir'} || undef);
+  my $containername = ($other{'containername'} || undef);
+  my $relative = ($other{'relative'} || undef);
+  my $user = ($other{'user'} || undef);
+  my $copy_instead_of_link = ($other{'copy_instead_of_link'} || undef);
+  if (!($type eq 'tar' ||
+        TeXLive::TLUtils::member($type, @{$::progs{'working_compressors'}}))) {
+    tlwarn "$0: TLPOBJ supports @{$::progs{'working_compressors'}} and tar containers, not $type\n";
+    tlwarn "$0: falling back to $DefaultCompressorFormat as container type!\n";
+    $type = $DefaultCompressorFormat;
   }
+
   if (!defined($containername)) {
     $containername = $self->name;
   }
@@ -621,28 +633,21 @@ sub make_container {
   $selfcopy->writeout(\*TMP);
   close(TMP);
   push(@files, "$tlpobjdir/$self->{'name'}.tlpobj");
-  $tarname = "$containername.tar";
-  if ($type eq "tar") {
-    $containername = $tarname;
-  } else {
-    $containername = "$tarname.xz";
-  }
+  # Switch to versioned containers
+  # $tarname = "$containername.tar";
+  $tarname = "$containername.r" . $self->revision . ".tar";
+  my $unversionedtar;
+  $unversionedtar = "$containername.tar" if (! $user);
 
   # start the fun
   my $tar = $::progs{'tar'};
-  my $xz;
   if (!defined($tar)) {
     tlwarn("$0: programs not set up, trying \"tar\".\n");
     $tar = "tar";
   }
-  if ($type eq "xz") {
-    $xz = $::progs{'xz'};
-    if (!defined($xz)) {
-      tlwarn("$0: programs not set up, trying \"xz\".\n");
-      $xz = "xz";
-    }
-  }
-  
+
+  $containername = $tarname;
+
   # Here we need to distinguish between making the master containers for
   # tlnet (where we can assume GNU tar) and making backups on a user's
   # machine (where we can assume nothing).  We determine this by whether
@@ -654,7 +659,9 @@ sub make_container {
   # overflow standard tar format and result in special things being
   # done.  We don't want the GNU-specific special things.
   #
-  my $is_user_container = ( $containername =~ /\.r[0-9]/ );
+  # We use versioned containers throughout, user mode is determined by
+  # argument.
+  my $is_user_container = $user;
   my @attrs
     = $is_user_container
       ? ()
@@ -706,7 +713,7 @@ sub make_container {
       # A complication, as always.  collapse_dirs returns absolute paths.
       # We want to change them back to relative so that the backup tar
       # has the same structure.
-      # in relative mode we have to remove the texmf-dist prefix, too
+      # In relative mode we have to remove the texmf-dist prefix, too.
       s,^$instroot/,, foreach @files_to_backup;
       if ($relative) {
         s,^$RelocTree/,, foreach @files_to_backup;
@@ -717,15 +724,53 @@ sub make_container {
 
   # Run tar. Unlink both here in case the container is also plain tar.
   unlink("$destdir/$tarname");
+  unlink("$destdir/$unversionedtar") if (! $user);
   unlink("$destdir/$containername");
   xsystem(@cmdline);
 
-  # compress it.
-  if ($type eq "xz") {
+  if ($type ne 'tar') {
+    # compress it
+    my $compressor = $::progs{$type};
+    if (!defined($compressor)) {
+      # fall back to $type as compressor, but that shouldn't happen
+      tlwarn("$0: programs not set up, trying \"$type\".\n");
+      $compressor = $type;
+    }
+    my @compressorargs = @{$Compressors{$type}{'compress_args'}};
+    my $compressorextension = $Compressors{$type}{'extension'};
+    $containername = "$tarname.$compressorextension";
+    debug("selected compressor: $compressor with @compressorargs, "
+          . "on $destdir/$tarname\n");
+  
+    # compress it.
     if (-r "$destdir/$tarname") {
-      system($xz, "--force", "-z", "$destdir/$tarname");
+      # system return 0 on success
+      if (system($compressor, @compressorargs, "$destdir/$tarname")) {
+        tlwarn("$0: Couldn't compress $destdir/$tarname\n");
+        return (0,0, "");
+      }
+      # make sure we remove the original tar since old lz4 versions
+      # cannot automatically delete it.
+      # We remove the tar file only when the compressed file was
+      # correctly created, something that should only happen in the
+      # most strange cases.
+      unlink("$destdir/$tarname")
+        if ((-r "$destdir/$tarname") && (-r "$destdir/$containername"));
+      # in case of system containers also create the links to the 
+      # versioned containers
+      if (! $user) {
+        my $linkname = "$destdir/$unversionedtar.$compressorextension";
+        unlink($linkname) if (-r $linkname);
+        if ($copy_instead_of_link) {
+          TeXLive::TLUtils::copy("-f", "$destdir/$containername", $linkname)
+        } else {
+          if (!symlink($containername, $linkname)) {
+            tlwarn("$0: Couldn't generate link $linkname -> $containername?\n");
+          }
+        }
+      }
     } else {
-      tlwarn("$0: Couldn't find $destdir/$tarname to run $xz\n");
+      tlwarn("$0: Couldn't find $destdir/$tarname to run $compressor\n");
       return (0, 0, "");
     }
   }
@@ -751,7 +796,7 @@ sub make_container {
   rmdir($InfraLocation) if $removetlpkgdir;
   xchdir($cwd);
 
-  debug(" done $containername, size $size, $checksum\n");
+  debug(" done $containername, size $size, csum $checksum\n");
   return ($size, $checksum, "$destdir/$containername");
 }
 
@@ -801,20 +846,9 @@ sub update_from_catalogue {
   $tlcname = lc($tlcname);
   if (defined($tlc->entries->{$tlcname})) {
     my $entry = $tlc->entries->{$tlcname};
-    # Record the id of the catalogue entry if it's found due to 
-    # quest4texlive.
+    # Record the id of the catalogue entry if it's found.
     if ($entry->entry->{'id'} ne $tlcname) {
       $self->catalogue($entry->entry->{'id'});
-    }
-    if (defined($entry->entry->{'date'})) {
-      my $foo = $entry->entry->{'date'};
-      $foo =~ s/^.Date: //;
-      # trying to extract the interesting part of a subversion date
-      # keyword expansion here, e.g.,
-      # $Date: 2018-02-26 19:16:54 +0100 (Mon, 26 Feb 2018) $
-      # ->2007-08-15 19:43:35 +0100
-      $foo =~ s/ \(.*\)( *\$ *)$//;  # maybe nothing after parens
-      $self->cataloguedata->{'date'} = $foo;
     }
     if (defined($entry->license)) {
       $self->cataloguedata->{'license'} = $entry->license;
@@ -833,8 +867,16 @@ sub update_from_catalogue {
     if (@{$entry->also}) {
       $self->cataloguedata->{'also'} = "@{$entry->also}";
     }
+    if (@{$entry->alias}) {
+      $self->cataloguedata->{'alias'} = "@{$entry->alias}";
+    }
     if (@{$entry->topics}) {
       $self->cataloguedata->{'topics'} = "@{$entry->topics}";
+    }
+    if (%{$entry->contact}) {
+      for my $k (keys %{$entry->contact}) {
+        $self->cataloguedata->{"contact-$k"} = $entry->contact->{$k};
+      }
     }
     #if (defined($entry->texlive)) {
     # $self->cataloguedata->{'texlive'} = $entry->texlive;
@@ -1445,26 +1487,37 @@ files describing a self-contained package.
 
 =head1 FILE SPECIFICATION
 
-Please see L<TeXLive::TLPSRC> documentation for the specification. The
-only differences are that the various C<*pattern> keys are invalid, and
-instead there are the respective C<*files> keys described below. Furthermore
-some more I<keys> is allowed: C<revision> which specifies the maximum of
-all last changed revision of files contained in the package, anything
-starting with C<catalogue-> specifying information coming from the
-TeX Catalogue, and C<relocated> taking either 0 or 1 indicating that
-this packages has been relocated, i.e., in the containers the 
-initial C<texmf-dist> directory has been stripped off.
+See L<TeXLive::TLPSRC> documentation for the general syntax and
+specification. The differences are:
 
-All these keys have in common that they are followed by a list of files
-I<indented> by one space. They differ only in the first line itself
-(described below).
+=over 4
+
+=item The various C<*pattern> keys are invalid.
+
+=item Instead, there are respective C<*files> keys described below.
+All the C<*files> keys are followed by a list of files in the given
+category, one per line, each line I<indented> by one space.
+
+=item Several new keys beginning with C<catalogue-> specify information
+automatically taken from the TeX Catalogue.
+
+=item A new key C<revision> is defined (automatically computed),
+which specifies the maximum of all the last-changed revisions of files
+contained in the package, plus possible other changes. By default,
+Catalogue-only changes do not change the revision.
+
+=item A new key C<relocated>, either 0 or 1, which indicates that this
+packages has been relocated, i.e., in the containers the initial
+C<texmf-dist> directory has been stripped off and replaced with static
+string C<RELOC>.
+
+=back
 
 =over 4
 
 =item C<srcfiles>, C<runfiles>, C<binfiles>, C<docfiles>
-each of these items contains addition the sum of sizes of the
-single files (in number of C<TeXLive::TLConfig::BlockSize> blocks, which
-is currently 4k).
+each of these items contains addition the sum of sizes of the single
+files (in units of C<TeXLive::TLConfig::BlockSize> blocks, currently 4k).
 
   srcfiles size=NNNNNN
   runfiles size=NNNNNN
@@ -1476,25 +1529,26 @@ above:
 
   docfiles size=NNNNNN
 
-But the lines listing the files are allowed to have additional tags:
+But the lines listing the files are allowed to have additional tags,
+(which in practice come from the TeX Catalogue)
 
   /------- excerpt from achemso.tlpobj
   |...
-  |docfiles size=1702468
-  | texmf-dist/doc/latex/aeguill/README details="Package Readme"
+  |docfiles size=220
   | texmf-dist/doc/latex/achemso/achemso.pdf details="Package documentation" language="en"
   |...
 
-Currently only the tags C<details> and C<language> are allowed. These
+Currently only the tags C<details> and C<language> are supported. These
 additional information can be accessed via the C<docfiledata> function
 returning a hash with the respective files (including path) as key.
 
 =item C<binfiles>
 
-Since C<binfiles> are different for the different architectures one
-C<tlpobj> file can contain C<binfiles> lines for different
-architectures. The architecture is specified on the C<binfiles> using
-the C<arch=>I<XXX> tag. Thus, C<binfiles> lines look like
+Since C<binfiles> can be different for different architectures, a single
+C<tlpobj> file can, and typically does, contain C<binfiles> lines for
+all available architectures. The architecture is specified on the
+C<binfiles> using the C<arch=>I<XXX> tag. Thus, C<binfiles> lines look
+like
 
   binfiles arch=XXXX size=NNNNN
 
@@ -1505,28 +1559,26 @@ with C<|> characters inserted to show the indentation:
 
   |name dvipsk
   |category TLCore
-  |revision 4427
-  |docfiles size=959434
+  |revision 52851
+  |docfiles size=285
   | texmf-dist/doc/dvips/dvips.html
   | ...
-  |runfiles size=1702468
+  |runfiles size=93
   | texmf-dist/dvips/base/color.pro
   | ...
   | texmf-dist/scripts/pkfix/pkfix.pl
-  |binfiles arch=i386-solaris size=329700
+  |binfiles arch=i386-solaris size=87
   | bin/i386-solaris/afm2tfm
   | bin/i386-solaris/dvips
-  | bin/i386-solaris/pkfix
-  |binfiles arch=win32 size=161280
+  |binfiles arch=win32 size=51
   | bin/win32/afm2tfm.exe
   | bin/win32/dvips.exe
-  | bin/win32/pkfix.exe
   |...
 
 =head1 PACKAGE VARIABLES
 
-TeXLive::TLPOBJ has one package wide variable which is C<containerdir> where
-generated container files are saved (if not otherwise specified.
+TeXLive::TLPOBJ has one package-wide variable, C<containerdir>, which is
+where generated container files are saved (if not otherwise specified).
 
   TeXLive::TLPOBJ->containerdir("path/to/container/dir");
 
@@ -1586,7 +1638,7 @@ activated for that install medium.
 
 =head1 OTHER FUNCTIONS
 
-The following functions can be called for an C<TLPOBJ> object:
+The following functions can be called for a C<TLPOBJ> object:
 
 =over 4
 
@@ -1636,13 +1688,13 @@ if all files of the package are from the same texmf tree, this tree
 is returned, otherwise an undefined value. That is also a check
 whether a package is relocatable.
 
-=item C<make_container($type,$instroot[, $destdir[, $containername[, $relative]]])>
+=item C<make_container($type,$instroot, [ destdir => $destdir, containername => $containername, relative => 0|1, user => 0|1 ])>
 
 creates a container file of the all files in the C<TLPOBJ>
 in C<$destdir> (if not defined then C<< TLPOBJ->containerdir >> is used).
 
 The C<$type> variable specifies the type of container to be used.
-Currently only C<zip> or C<xz> are allowed, and are generating
+Currently only C<zip> or C<xz> are allowed, and generate
 zip files and tar.xz files, respectively.
 
 The file name of the created container file is C<$containername.extension>,
@@ -1656,7 +1708,7 @@ C<TLPOBJ> file in C<tlpkg/tlpobj/$name.tlpobj>.
 The argument C<$instroot> specifies the root of the installation from
 which the files should be taken.
 
-If the argument C<$relative> is present and true (perlish true) AND the
+If the argument C<$relative> is passed and true (perlish true) AND the
 packages does not span multiple texmf trees (i.e., all the first path
 components of all files are the same) then a relative packages is created,
 i.e., the first path component is stripped. In this case the tlpobj file
@@ -1664,6 +1716,9 @@ is placed into the root of the installation.
 
 This is used to distribute packages which can be installed in any arbitrary
 texmf tree (of other distributions, too).
+
+If user is present and true, no extra arguments for container generation are
+passed to tar (to make sure that user tar doesn't break).
 
 Return values are the size, the checksum, and the full name of the container.
 
@@ -1789,10 +1844,9 @@ lines for language.dat.lua that can be generated from the tlpobj.
 
 =head1 SEE ALSO
 
-The modules L<TeXLive::TLConfig>, L<TeXLive::TLCrypto>,
-L<TeXLive::TLUtils>, L<TeXLive::TLPSRC>, L<TeXLive::TLPDB>,
-L<TeXLive::TLTREE>, L<TeXLive::TeXCatalogue>, etc., and the
-documentation in the repository: C<Master/tlpkg/doc/>.
+The other modules in C<Master/tlpkg/TeXLive/> (L<TeXLive::TLConfig> and
+the rest), and the scripts in C<Master/tlpkg/bin/> (especially
+C<tl-update-tlpdb>), the documentation in C<Master/tlpkg/doc/>, etc.
 
 =head1 AUTHORS AND COPYRIGHT
 
