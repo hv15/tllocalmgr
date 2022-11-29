@@ -34,7 +34,7 @@ GetOptions( $opts,
 			'forceupdate',
 			'localsearch', #TODO
 			'location', #TODO ?
-			'mirror',
+			'mirror=s',
 			'nocolor',
 			'help|h',
 			'version|v'
