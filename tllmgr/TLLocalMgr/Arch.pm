@@ -1,4 +1,4 @@
-package TeXLive::Arch;
+package TLLocalMgr::Arch;
 use 5.010;
 use base 'TeXLive::TLPDB';
 use strict;
@@ -122,11 +122,11 @@ sub archpackages {
             my @runfiles =  $tlpdep->runfiles;
             my @docfiles =  $tlpdep->docfiles;
             push @docfiles, $tlpdep->srcfiles;
-            # For texlive-core, avoid packages: 
+            # For texlive-core, avoid packages:
             # 1. whose name begin with bin- collection- or hyphen-
             # 2. without runfiles
             # 3. without runfiles under texmf-dist
-            if ( $d !~ /$SKIPPATTERN/ 
+            if ( $d !~ /$SKIPPATTERN/
                 && @runfiles && any { $_ =~ m/texmf-dist|RELOC/ } @runfiles ) {
                 push @{ $tlpackages{'core'} }, $d
             }

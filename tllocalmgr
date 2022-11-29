@@ -8,9 +8,10 @@ require LWP::UserAgent;
 use Term::ANSIColor qw(:constants);
 use Term::ShellUI;
 use Getopt::Long;
-use lib ('tlpkg', "/usr/share/texmf/arch/tlpkg");
-use TeXLive::Arch;
+use lib ('tlpkg', "/usr/share/tlpkg");
 use TeXLive::TLConfig;
+use lib ('tllmgr', "/usr/share/tllmgr");
+use TLLocalMgr::Arch;
 
 die "You can't run this program as root\n" if $ENV{'USER'} eq "root";
 
@@ -18,7 +19,7 @@ die "You can't run this program as root\n" if $ENV{'USER'} eq "root";
 my $TEXMFVAR = "/var/lib/texmf";
 my $INSTALLEDPKGS = "$TEXMFVAR/arch/installedpkgs";
 
-our $VERSION = "0.8";
+our $VERSION = "0.8.1";
 our $YEAR = $ReleaseYear;
 my $CTANBASEURL="http://mirror.ctan.org/systems/texlive/tlnet";
 
@@ -59,7 +60,8 @@ $term->prompt( "tllocalmgr> " );
 ########### INITIALIZATION ###########
 
 unless ( -d $ROOT ) {
-	system("mkdir -p $ROOT/tlpkg")
+	system("mkdir -p $ROOT/tlpkg");
+	system("mkdir -p $ROOT/archive");
 }
 
 open LOG, ">> $logfile";
@@ -103,7 +105,7 @@ print GREEN, BOLD, "Initializing ...", RESET, "\n" ;
 
 ### read DB
 
-my $tlpdb = new TeXLive::Arch (root => $ROOT) || die "cannot read $ROOT/tlpkg/texlive.tlpdb";
+my $tlpdb = new TLLocalMgr::Arch (root => "$ROOT") || die "cannot read $ROOT/$DatabaseLocation";
 
 my %tlpackages = $tlpdb->archpackages;
 
@@ -136,7 +138,7 @@ my %locallyinstalleddoc_versions; # version of each locally installed doc pkg
 #my @installed_lists = <$INSTALLEDPKGS/*.pkgs> ;
 #my @installed_cols; # collections installed
 
-chomp(my @pacman = `pacman -Qs ^texlive- | egrep ^local | cut -d'/' -f2`);
+chomp(my @pacman = `pacman -Qs ^texlive- | grep -E ^local | cut -d'/' -f2`);
 my @localpacman = grep { /^texlive-local-/ } @pacman;
 # To have the standard collections we get rid of
 # texlive-local-<pkg> and texlive-localmanager:
