@@ -1,5 +1,0 @@
-#!/bin/bash
-
-source PKGBUILD || exit 1
-git archive --prefix=$pkgname-$pkgver/ v$pkgver | gzip > $pkgname-$pkgver.tar.gz
-
