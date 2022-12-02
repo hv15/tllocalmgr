@@ -10,20 +10,22 @@ use Term::ShellUI;
 use Getopt::Long;
 use lib ('tlpkg', "/usr/share/tlpkg");
 use TeXLive::TLConfig;
+use TeXLive::TLUtils;
 use lib ('tllmgr', "/usr/share/tllmgr");
 use TLLocalMgr::Arch;
 
 die "You can't run this program as root\n" if $ENV{'USER'} eq "root";
 
 # Paths
-my $TEXMFVAR = "/var/lib/texmf";
-my $INSTALLEDPKGS = "$TEXMFVAR/arch/installedpkgs";
+my $TEXMFSYSVAR = "/var/lib/texmf";
+my $TEXMFVAR = "$ENV{HOME}/.texlive/texmf-var";
+my $INSTALLEDPKGS = "$TEXMFSYSVAR/arch/installedpkgs";
 
-our $VERSION = "0.8.1";
+our $VERSION = "0.8.2";
 our $YEAR = $ReleaseYear;
 my $CTANBASEURL="http://mirror.ctan.org/systems/texlive/tlnet";
 
-my $ROOT = "$ENV{HOME}/.texlive/texmf-var/arch";
+my $ROOT = "$TEXMFVAR/arch";
 my $LOCALDB = "$ROOT/tlpkg/texlive.tlpdb";
 my $LOCALDBXZ = "$LOCALDB.xz";
 my $logfile = "$ROOT/tllocalmgr.log";
@@ -33,6 +35,7 @@ my $opts = {};
 GetOptions( $opts,
 			'skipupdate',
 			'forceupdate',
+			'forcereset',
 			'localsearch', #TODO
 			'location', #TODO ?
 			'mirror=s',
@@ -42,6 +45,7 @@ GetOptions( $opts,
 		);
 die usage(), "\n" if $opts->{'help'};
 die version(), "\n" if $opts->{'version'};
+my $forcereset = $opts->{'forcereset'} || 0;
 my $skipupdate = $opts->{'skipupdate'} || 0;
 my $forceupdate = $opts->{'forceupdate'} || 0;
 my $location = $opts->{'location'} || $ROOT;
@@ -59,10 +63,15 @@ $term->prompt( "tllocalmgr> " );
 
 ########### INITIALIZATION ###########
 
-unless ( -d $ROOT ) {
-	system("mkdir -p $ROOT/tlpkg");
-	system("mkdir -p $ROOT/archive");
+if ($forcereset) {
+	print "Are you sure you want to reset TEXMFVAR ($TEXMFVAR)? [Y/n] ";
+	chomp(my $choice = <STDIN>);
+	if (not length $choice or $choice =~ m/^y/i) {
+		print "Resetting TEXMFVAR...\n";
+		TeXLive::TLUtils::rmtree($ROOT);
+	}
 }
+TeXLive::TLUtils::make_local_skeleton($ROOT);
 
 open LOG, ">> $logfile";
 my $initlog = 0;
@@ -105,7 +114,10 @@ print GREEN, BOLD, "Initializing ...", RESET, "\n" ;
 
 ### read DB
 
-my $tlpdb = new TLLocalMgr::Arch (root => "$ROOT") || die "cannot read $ROOT/$DatabaseLocation";
+my $tlpdb = new TLLocalMgr::Arch (root => "$ROOT")
+	or die RED, "cannot read $ROOT/$DatabaseLocation...", RESET, "\n",
+		   "Is your TEXMFVAR ($TEXMFVAR) setup correctly? You can\n",
+		   "reset it using ", GREEN, "`--forcereset'", RESET, "...\n";
 
 my %tlpackages = $tlpdb->archpackages;
 
@@ -875,6 +887,7 @@ Commands:
 Options:     --help          Shows this help
              --version       Show the version number
              --forceupdate   Force updating the TeXLive database
+             --forcereset    Reset TEXMFVAR directory (delete all files)
              --skipupdate    Skip updating the TeXLive database
              --localsearch   Search only installed packages
              --location      #TODO?
