@@ -445,7 +445,7 @@ sub run_install {
 		if ( $locallyinstalledpkg_versions{$_} ) {
 			echo "$_ is already installed with texlive-local-$_";
 			if ($locallyinstalledpkg_versions{$_} == $pkgrev) {
-				echo "and it is uptodate"
+				echo "and it is up-to-date"
 			} else {
 				print "Do you want to update it locally? (Y/n) > " ;
 				chomp(my $choice = <STDIN>) ;
@@ -456,7 +456,7 @@ sub run_install {
 		elsif ( $installedpkg_versions{$_} ) {
 			echo "$_ is already installed with texlive-$collectionsbypkg{$_}";
 			if ($installedpkg_versions{$_} == $pkgrev) {
-				echo "and it is uptodate"
+				echo "and it is up-to-date"
 			} else {
 				#TODO check if it was already locally installed
 				print "Do you want to update it locally? (Y/n) > " ;
@@ -485,7 +485,7 @@ sub run_installdoc {
 		if ( $locallyinstalleddoc_versions{$_} ) {
 			echo "$_ is already installed with texlive-local-$_-doc";
 			if ($locallyinstalleddoc_versions{$_} == $pkgrev) {
-				echo "and it is uptodate"
+				echo "and it is up-to-date"
 			} else {
 				print "Do you want to update it locally? (Y/n) > " ;
 				chomp(my $choice = <STDIN>) ;
@@ -518,7 +518,7 @@ sub run_update {
 		if ( $locallyinstalledpkg_versions{$_} ) {
 			echo "$_ is already installed with texlive-local-$_";
 			if ($locallyinstalledpkg_versions{$_} == $pkgrev) {
-				echo "and it is uptodate"
+				echo "and it is up-to-date"
 			} else {
 				print "Do you want to update it locally? (Y/n) > " ;
 				chomp(my $choice = <STDIN>) ;
@@ -529,7 +529,7 @@ sub run_update {
 		elsif ( $installedpkg_versions{$_} ) {
 			echo "$_ is already installed with texlive-$collectionsbypkg{$_}";
 			if ($installedpkg_versions{$_} == $pkgrev) {
-				echo "and it is uptodate"
+				echo "and it is up-to-date"
 			} else {
 				print "Do you want to update it locally? (Y/n) > " ;
 				chomp(my $choice = <STDIN>) ;
